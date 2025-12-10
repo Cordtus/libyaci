@@ -284,7 +284,7 @@ Here's the same functionality with libyaci:
 
 ```go
 require (
-    github.com/manifest-network/libyaci v0.1.0
+    github.com/Cordtus/libyaci v0.1.0
 )
 ```
 
@@ -301,7 +301,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/manifest-network/libyaci"
+    "github.com/Cordtus/libyaci"
 )
 
 func main() {

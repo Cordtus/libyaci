@@ -1,4 +1,4 @@
-module github.com/manifest-network/libyaci
+module github.com/Cordtus/libyaci
 
 go 1.25.5
 

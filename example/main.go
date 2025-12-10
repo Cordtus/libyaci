@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/manifest-network/libyaci"
+	"github.com/Cordtus/libyaci"
 )
 
 func main() {

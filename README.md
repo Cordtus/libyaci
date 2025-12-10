@@ -13,7 +13,7 @@ A dynamic gRPC client for Go that uses server reflection to invoke any method wi
 ## Installation
 
 ```bash
-go get github.com/manifest-network/libyaci
+go get github.com/Cordtus/libyaci
 ```
 
 ## Quick Start
@@ -26,7 +26,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/manifest-network/libyaci"
+    "github.com/Cordtus/libyaci"
 )
 
 func main() {
