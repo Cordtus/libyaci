@@ -1,6 +1,6 @@
 module github.com/Cordtus/libyaci/demo
 
-go 1.25.5
+go 1.24.0
 
 replace github.com/Cordtus/libyaci => ../
 
