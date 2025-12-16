@@ -219,31 +219,37 @@ func buildFullMethodPath(methodDesc protoreflect.MethodDescriptor) string {
 	return fullName
 }
 
+// symbolFetch tracks in-progress fetches for a symbol
+type symbolFetch struct {
+	done chan struct{}
+	err  error
+}
+
 // Resolver provides thread-safe resolution of protobuf types using server reflection.
 // It implements protoregistry.MessageTypeResolver and protoregistry.ExtensionTypeResolver.
 type Resolver struct {
 	files       *protoregistry.Files
 	conn        *grpc.ClientConn
 	ctx         context.Context
-	seenSymbols map[string]bool
+	inProgress  map[string]*symbolFetch // tracks in-progress fetches
 	maxRetries  uint
-	mu          sync.RWMutex
+	mu          sync.Mutex
 }
 
 func newResolver(ctx context.Context, files *protoregistry.Files, conn *grpc.ClientConn, maxRetries uint) *Resolver {
 	return &Resolver{
-		files:       files,
-		conn:        conn,
-		ctx:         ctx,
-		seenSymbols: make(map[string]bool),
-		maxRetries:  maxRetries,
+		files:      files,
+		conn:       conn,
+		ctx:        ctx,
+		inProgress: make(map[string]*symbolFetch),
+		maxRetries: maxRetries,
 	}
 }
 
 // FindMethodDescriptor finds a method descriptor by service and method name.
 func (r *Resolver) FindMethodDescriptor(serviceName, methodName string) (protoreflect.MethodDescriptor, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var methodDesc protoreflect.MethodDescriptor
 	var found bool
@@ -276,28 +282,71 @@ func (r *Resolver) FindMethodDescriptor(serviceName, methodName string) (protore
 // FindMessageByName finds a message type by its full name.
 // This method is called automatically when unmarshaling protobuf Any types.
 func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.MessageType, error) {
-	r.mu.RLock()
+	// First, check if already registered
+	r.mu.Lock()
 	desc, err := r.files.FindDescriptorByName(name)
-	r.mu.RUnlock()
-
 	if err == nil && desc != nil {
+		r.mu.Unlock()
 		return createMessageType(desc, name)
 	}
 
-	// Fetch the descriptor via reflection if not found locally
-	if err := r.fetchDescriptorBySymbol(string(name)); err != nil {
-		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", name, err)
+	// Check if fetch is in progress
+	if fetch, ok := r.inProgress[string(name)]; ok {
+		r.mu.Unlock()
+		// Wait for the in-progress fetch to complete
+		<-fetch.done
+		if fetch.err != nil {
+			return nil, fetch.err
+		}
+		// Re-check after fetch completes
+		r.mu.Lock()
+		desc, err = r.files.FindDescriptorByName(name)
+		r.mu.Unlock()
+		if err != nil || desc == nil {
+			return nil, fmt.Errorf("message %s not found after fetch: %w", name, err)
+		}
+		return createMessageType(desc, name)
 	}
 
-	r.mu.RLock()
-	desc, err = r.files.FindDescriptorByName(name)
-	r.mu.RUnlock()
+	// Start a new fetch
+	fetch := &symbolFetch{done: make(chan struct{})}
+	r.inProgress[string(name)] = fetch
+	r.mu.Unlock()
 
-	if err != nil {
-		return nil, fmt.Errorf("message %s not found: %w", name, err)
+	// Perform the fetch
+	fetchErr := r.doFetch(string(name))
+
+	// Mark fetch as complete
+	r.mu.Lock()
+	fetch.err = fetchErr
+	close(fetch.done)
+	delete(r.inProgress, string(name))
+	
+	if fetchErr != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", name, fetchErr)
+	}
+
+	desc, err = r.files.FindDescriptorByName(name)
+	r.mu.Unlock()
+
+	if err != nil || desc == nil {
+		return nil, fmt.Errorf("message %s not found after fetch: %w", name, err)
 	}
 
 	return createMessageType(desc, name)
+}
+
+// doFetch performs the actual fetch without holding the lock
+func (r *Resolver) doFetch(symbol string) error {
+	fdProtos, err := fetchFileDescriptorsBySymbol(r.ctx, r.conn, symbol, r.maxRetries)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.processFileDescriptorsLocked(fdProtos)
 }
 
 // FindMessageByURL finds a message type by its type URL (used in protobuf Any types).
@@ -326,47 +375,15 @@ func (r *Resolver) Files() *protoregistry.Files {
 	return r.files
 }
 
-func (r *Resolver) fetchDescriptorBySymbol(symbol string) error {
-	r.mu.RLock()
-	seen := r.seenSymbols[symbol]
-	r.mu.RUnlock()
-
-	if seen {
-		return nil
-	}
-
-	r.mu.Lock()
-	r.seenSymbols[symbol] = true
-	r.mu.Unlock()
-
-	fdProtos, err := fetchFileDescriptorsBySymbol(r.ctx, r.conn, symbol, r.maxRetries)
-	if err != nil {
-		return err
-	}
-
-	return r.processFileDescriptors(fdProtos)
-}
-
-func (r *Resolver) fetchDescriptorByName(name string) error {
-	fdProtos, err := fetchFileDescriptorsByName(r.ctx, r.conn, name, r.maxRetries)
-	if err != nil {
-		return err
-	}
-
-	return r.processFileDescriptors(fdProtos)
-}
-
-func (r *Resolver) processFileDescriptors(fdProtos []*descriptorpb.FileDescriptorProto) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+// processFileDescriptorsLocked processes file descriptors while holding the lock
+func (r *Resolver) processFileDescriptorsLocked(fdProtos []*descriptorpb.FileDescriptorProto) error {
 	for _, fdProto := range fdProtos {
 		name := fdProto.GetName()
 		if _, err := r.files.FindFileByPath(name); err == nil {
 			continue // Already registered
 		}
 
-		// Fetch dependencies first
+		// Fetch dependencies first (recursive, needs to release lock)
 		for _, dep := range fdProto.Dependency {
 			if _, err := r.files.FindFileByPath(dep); err == nil {
 				continue
@@ -390,6 +407,17 @@ func (r *Resolver) processFileDescriptors(fdProtos []*descriptorpb.FileDescripto
 	}
 
 	return nil
+}
+
+func (r *Resolver) fetchDescriptorByName(name string) error {
+	fdProtos, err := fetchFileDescriptorsByName(r.ctx, r.conn, name, r.maxRetries)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.processFileDescriptorsLocked(fdProtos)
 }
 
 func createMessageType(desc protoreflect.Descriptor, name protoreflect.FullName) (protoreflect.MessageType, error) {
