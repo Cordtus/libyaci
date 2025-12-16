@@ -2,6 +2,14 @@
 
 A dynamic gRPC client for Go that uses server reflection to invoke methods without precompiled protobuf stubs.
 
+## Features
+
+- Dynamic gRPC invocation without compiled protobuf stubs
+- Server reflection for automatic service discovery
+- On-demand type resolution for `Any` fields
+- Thread-safe concurrent access
+- Raw protobuf transaction decoding (Cosmos SDK)
+
 ## Installation
 
 ```bash
@@ -59,10 +67,6 @@ resp, err := client.Invoke("package.Service.Method", []byte(`{"field": "value"}`
 // Empty request
 resp, err := client.Invoke("package.Service.Method", nil)
 
-// Using Go structs
-var result ResponseType
-err := client.InvokeJSON("package.Service.Method", RequestType{Field: "value"}, &result)
-
 // Raw protobuf message access
 msg, err := client.InvokeRaw("package.Service.Method", nil)
 blockField := msg.ProtoReflect().Get(msg.Descriptor().Fields().ByName("block"))
@@ -70,6 +74,21 @@ blockField := msg.ProtoReflect().Get(msg.Descriptor().Fields().ByName("block"))
 // Extract a specific field
 value, err := client.ExtractField("package.Service.Method", nil, "fieldName")
 ```
+
+### Decode Raw Protobuf Transactions
+
+For Cosmos SDK chains, decode raw transaction bytes with full `Any` type resolution:
+
+```go
+// txBytes is raw protobuf from block.txs[] or tx_responses[].tx
+jsonBytes, err := client.DecodeTxBytes(txBytes)
+if err != nil {
+    log.Fatal(err)
+}
+// jsonBytes contains fully resolved JSON with all message types expanded
+```
+
+This automatically resolves nested `Any` fields (like `MsgExec` containing other messages) by fetching type descriptors via server reflection.
 
 ### Service Discovery
 
@@ -94,6 +113,10 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
 )
 ```
+
+## Thread Safety
+
+The client is safe for concurrent use from multiple goroutines. The internal type resolver uses proper synchronization to handle concurrent symbol lookups, ensuring that multiple goroutines fetching the same type will coordinate correctly without race conditions.
 
 ## How It Works
 
