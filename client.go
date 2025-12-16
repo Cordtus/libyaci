@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -35,16 +36,27 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		opt(o)
 	}
 
-	dialCtx, cancel := context.WithCancel(ctx)
+	// Create the client context (for ongoing operations)
+	clientCtx, cancel := context.WithCancel(ctx)
 
-	conn, err := dial(dialCtx, address, o)
+	// Create a separate context for dial/init operations with optional timeout
+	var initCtx context.Context
+	var initCancel context.CancelFunc
+	if o.dialTimeout > 0 {
+		initCtx, initCancel = context.WithTimeout(clientCtx, o.dialTimeout)
+	} else {
+		initCtx, initCancel = context.WithCancel(clientCtx)
+	}
+	defer initCancel()
+
+	conn, err := dial(initCtx, address, o)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to connect to %s: %w", address, err)
 	}
 
 	// Fetch all descriptors from the server
-	descriptors, err := fetchAllDescriptors(dialCtx, conn, o.maxRetries)
+	descriptors, err := fetchAllDescriptors(initCtx, conn, o.maxRetries)
 	if err != nil {
 		conn.Close()
 		cancel()
@@ -59,11 +71,11 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		return nil, fmt.Errorf("failed to build descriptor set: %w", err)
 	}
 
-	resolver := newResolver(dialCtx, files, conn, o.maxRetries)
+	resolver := newResolver(clientCtx, files, conn, o.maxRetries)
 
 	return &Client{
 		conn:     conn,
-		ctx:      dialCtx,
+		ctx:      clientCtx,
 		cancel:   cancel,
 		resolver: resolver,
 		opts:     o,
@@ -179,7 +191,7 @@ func dial(ctx context.Context, address string, o *options) (*grpc.ClientConn, er
 	}
 
 	if o.insecure {
-		dialOpts = append(dialOpts, grpc.WithInsecure())
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
 		creds := credentials.NewClientTLSFromCert(nil, "")
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))

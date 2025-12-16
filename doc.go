@@ -42,6 +42,7 @@
 //	    libyaci.WithInsecure(),
 //	    libyaci.WithMaxRetries(5),
 //	    libyaci.WithMaxRecvMsgSize(16*1024*1024),
+//	    libyaci.WithDialTimeout(30*time.Second),
 //	)
 //
 // # Thread Safety

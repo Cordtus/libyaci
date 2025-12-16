@@ -182,11 +182,19 @@ func sendReflectionRequest(ctx context.Context, conn *grpc.ClientConn, req *refl
 		return nil, fmt.Errorf("failed to receive response: %w", err)
 	}
 
-	if errResp, ok := resp.MessageResponse.(*reflection.ServerReflectionResponse_ErrorResponse); ok {
-		return nil, fmt.Errorf("reflection error: %s (code: %d)", errResp.ErrorResponse.ErrorMessage, errResp.ErrorResponse.ErrorCode)
+	if err := checkErrorResponse(resp); err != nil {
+		return nil, err
 	}
 
 	return resp, nil
+}
+
+// checkErrorResponse checks if the reflection response contains an error.
+func checkErrorResponse(resp *reflection.ServerReflectionResponse) error {
+	if errResp, ok := resp.MessageResponse.(*reflection.ServerReflectionResponse_ErrorResponse); ok {
+		return fmt.Errorf("reflection error: %s (code: %d)", errResp.ErrorResponse.ErrorMessage, errResp.ErrorResponse.ErrorCode)
+	}
+	return nil
 }
 
 // buildFileDescriptorSet builds a protoregistry.Files from the given descriptors.

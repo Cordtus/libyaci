@@ -110,6 +110,7 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithInsecure(),                         // Disable TLS
     libyaci.WithMaxRetries(5),                      // Retry count (default: 3)
     libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 4MB)
+    libyaci.WithDialTimeout(30 * time.Second),      // Connection timeout (default: no timeout)
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
 )
 ```

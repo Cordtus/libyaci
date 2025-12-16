@@ -1,6 +1,10 @@
 package libyaci
 
-import "google.golang.org/grpc"
+import (
+	"time"
+
+	"google.golang.org/grpc"
+)
 
 const (
 	defaultMaxRetries     = 3
@@ -11,6 +15,7 @@ type options struct {
 	insecure       bool
 	maxRetries     uint
 	maxRecvMsgSize int
+	dialTimeout    time.Duration
 	dialOpts       []grpc.DialOption
 }
 
@@ -19,6 +24,7 @@ func defaultOptions() *options {
 		insecure:       false,
 		maxRetries:     defaultMaxRetries,
 		maxRecvMsgSize: defaultMaxRecvMsgSize,
+		dialTimeout:    0, // no timeout by default (uses context deadline)
 	}
 }
 
@@ -43,6 +49,14 @@ func WithMaxRetries(n uint) Option {
 func WithMaxRecvMsgSize(size int) Option {
 	return func(o *options) {
 		o.maxRecvMsgSize = size
+	}
+}
+
+// WithDialTimeout sets a timeout for the initial connection and descriptor fetching.
+// If not set, the timeout is controlled by the context passed to Dial().
+func WithDialTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.dialTimeout = timeout
 	}
 }
 
