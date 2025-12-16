@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -114,4 +116,29 @@ func (c *Client) ExtractField(method string, request []byte, fieldName string) (
 	}
 
 	return value.Interface(), nil
+}
+
+// DecodeTxBytes decodes raw protobuf transaction bytes to JSON.
+// The raw bytes should be the protobuf-encoded cosmos.tx.v1beta1.Tx message.
+func (c *Client) DecodeTxBytes(rawBytes []byte) ([]byte, error) {
+	// Find the Tx message type
+	txType, err := c.resolver.FindMessageByName("cosmos.tx.v1beta1.Tx")
+	if err != nil {
+		return nil, fmt.Errorf("find Tx message type: %w", err)
+	}
+
+	// Create a new message instance and unmarshal
+	msg := txType.New().Interface()
+	if err := proto.Unmarshal(rawBytes, msg); err != nil {
+		return nil, fmt.Errorf("unmarshal tx bytes: %w", err)
+	}
+
+	// Marshal to JSON using protojson with resolver for Any type URLs
+	mo := protojson.MarshalOptions{Resolver: c.resolver}
+	jsonBytes, err := mo.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal to json: %w", err)
+	}
+
+	return jsonBytes, nil
 }
