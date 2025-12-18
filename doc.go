@@ -36,6 +36,31 @@
 //	methods, err := client.ListMethods("cosmos.bank.v1beta1.Query")
 //	input, output, err := client.DescribeMethod("cosmos.bank.v1beta1.Query.Balance")
 //
+// # Cosmos SDK Convenience Methods
+//
+// High-level methods for common Cosmos SDK queries:
+//
+//	// Block queries
+//	block, err := client.GetLatestBlock()
+//	height, err := client.GetLatestBlockHeight()
+//	block, err := client.GetBlockByHeight(12345)
+//	earliest, err := client.GetEarliestBlockHeight()
+//
+//	// Transaction queries
+//	txs, err := client.GetTxsByHeight(12345)
+//	txsParsed, err := client.GetTxsByHeightParsed(12345)
+//
+//	// Chain info
+//	chainID, err := client.GetChainID()
+//	denom, err := client.GetBondDenom()
+//
+//	// Account queries
+//	validators, err := client.GetAllValidators()  // returns map[address]moniker
+//	modules, err := client.GetModuleAccounts()    // returns map[address]name
+//	balance, err := client.GetBalance(address, denom)
+//	balances, err := client.GetAllBalances(address)
+//	delegations, err := client.GetDelegations(delegatorAddr)
+//
 // # Configuration
 //
 //	client, err := libyaci.Dial(ctx, "grpc.example.com:443",

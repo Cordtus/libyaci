@@ -240,12 +240,12 @@ type symbolFetch struct {
 // Resolver provides thread-safe resolution of protobuf types using server reflection.
 // It implements protoregistry.MessageTypeResolver and protoregistry.ExtensionTypeResolver.
 type Resolver struct {
-	files       *protoregistry.Files
-	conn        *grpc.ClientConn
-	ctx         context.Context
-	inProgress  map[string]*symbolFetch // tracks in-progress fetches
-	maxRetries  uint
-	mu          sync.Mutex
+	files      *protoregistry.Files
+	conn       *grpc.ClientConn
+	ctx        context.Context
+	inProgress map[string]*symbolFetch // tracks in-progress fetches
+	maxRetries uint
+	mu         sync.Mutex
 }
 
 func newResolver(ctx context.Context, files *protoregistry.Files, conn *grpc.ClientConn, maxRetries uint) *Resolver {
@@ -333,7 +333,7 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 	fetch.err = fetchErr
 	close(fetch.done)
 	delete(r.inProgress, string(name))
-	
+
 	if fetchErr != nil {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", name, fetchErr)
