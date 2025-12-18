@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: latest_tag
+        run: |
+          git fetch --tags
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          echo "tag=${LATEST:-v0.0.0}" >> $GITHUB_OUTPUT
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          LATEST="${{ steps.latest_tag.outputs.tag }}"
+          # Get commits since last tag
+          if [ "$LATEST" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"%s" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"%s" ${LATEST}..HEAD)
+          fi
+
+          # Check for breaking changes
+          if echo "$COMMITS" | grep -qiE '^(feat|fix|refactor|perf)!:|BREAKING CHANGE'; then
+            BUMP="major"
+          # Check for new features
+          elif echo "$COMMITS" | grep -qE '^feat(\(.+\))?:'; then
+            BUMP="minor"
+          # Check for fixes or other changes
+          elif echo "$COMMITS" | grep -qE '^(fix|perf|refactor)(\(.+\))?:'; then
+            BUMP="patch"
+          else
+            BUMP="none"
+          fi
+
+          echo "type=$BUMP" >> $GITHUB_OUTPUT
+
+      - name: Calculate new version
+        id: version
+        if: steps.bump.outputs.type != 'none'
+        run: |
+          LATEST="${{ steps.latest_tag.outputs.tag }}"
+          BUMP="${{ steps.bump.outputs.type }}"
+
+          # Parse version
+          VERSION=${LATEST#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case $BUMP in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        if: steps.bump.outputs.type != 'none'
+        run: |
+          LATEST="${{ steps.latest_tag.outputs.tag }}"
+          if [ "$LATEST" = "v0.0.0" ]; then
+            NOTES=$(git log --pretty=format:"- %s" HEAD)
+          else
+            NOTES=$(git log --pretty=format:"- %s" ${LATEST}..HEAD)
+          fi
+
+          # Escape for GitHub Actions
+          NOTES="${NOTES//'%'/'%25'}"
+          NOTES="${NOTES//$'\n'/'%0A'}"
+          NOTES="${NOTES//$'\r'/'%0D'}"
+
+          echo "notes=$NOTES" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        if: steps.bump.outputs.type != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          NOTES="${{ steps.notes.outputs.notes }}"
+
+          # Decode notes
+          NOTES=$(echo "$NOTES" | sed 's/%0A/\n/g; s/%0D/\r/g; s/%25/%/g')
+
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "$NOTES"
