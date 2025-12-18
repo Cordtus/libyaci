@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	reflection "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	reflection "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"

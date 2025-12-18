@@ -6,7 +6,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -150,7 +150,8 @@ func newMockServer() *mockServer {
 }
 
 func (m *mockServer) dial(ctx context.Context) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, "",
+	_ = ctx // context not used with NewClient (connects lazily)
+	return grpc.NewClient("passthrough://bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
 			return m.lis.Dial()
 		}),
