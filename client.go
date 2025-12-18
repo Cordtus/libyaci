@@ -199,7 +199,7 @@ func dial(ctx context.Context, address string, o *options) (*grpc.ClientConn, er
 
 	dialOpts = append(dialOpts, o.dialOpts...)
 
-	return grpc.DialContext(ctx, address, dialOpts...)
+	return grpc.NewClient(address, dialOpts...)
 }
 
 func parseMethodFullName(methodFullName string) (string, string, error) {
