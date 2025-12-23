@@ -22,6 +22,7 @@ go get github.com/Cordtus/libyaci
 
 - Go 1.24+
 - gRPC server with [reflection](https://github.com/grpc/grpc/blob/master/doc/server-reflection.md) enabled
+  - Supports both `grpc.reflection.v1` and `grpc.reflection.v1alpha` (automatic fallback)
 
 ## Quick Start
 
@@ -514,6 +515,8 @@ The client is safe for concurrent use from multiple goroutines. The internal typ
 
 1. Connects to the gRPC server
 2. Fetches all service descriptors via the reflection API
+   - Tries `grpc.reflection.v1` first, falls back to `grpc.reflection.v1alpha` for older servers
+   - Caches the detected version per connection for performance
 3. Builds a local proto registry from the descriptors
 4. Creates dynamic request messages from JSON input
 5. Invokes methods and marshals responses back to JSON
