@@ -3,15 +3,47 @@ package libyaci
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
-	reflection "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	reflectionv1alpha "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
+
+// reflectionVersion tracks which reflection API version is supported by a connection.
+type reflectionVersion int
+
+const (
+	reflectionUnknown reflectionVersion = iota
+	reflectionV1
+	reflectionV1Alpha
+)
+
+// connReflectionVersion caches which reflection version each connection supports.
+var (
+	connVersions   = make(map[*grpc.ClientConn]reflectionVersion)
+	connVersionsMu sync.RWMutex
+)
+
+// getConnVersion returns the cached reflection version for a connection.
+func getConnVersion(conn *grpc.ClientConn) reflectionVersion {
+	connVersionsMu.RLock()
+	defer connVersionsMu.RUnlock()
+	return connVersions[conn]
+}
+
+// setConnVersion caches which reflection version works for a connection.
+func setConnVersion(conn *grpc.ClientConn, v reflectionVersion) {
+	connVersionsMu.Lock()
+	defer connVersionsMu.Unlock()
+	connVersions[conn] = v
+}
 
 // fetchAllDescriptors retrieves all file descriptors from the server via reflection.
 func fetchAllDescriptors(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
@@ -36,29 +68,36 @@ func fetchAllDescriptors(ctx context.Context, conn *grpc.ClientConn, maxRetries 
 	return result, nil
 }
 
-func listServices(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]string, error) {
-	req := &reflection.ServerReflectionRequest{
-		MessageRequest: &reflection.ServerReflectionRequest_ListServices{
-			ListServices: "*",
-		},
-	}
+// listServicesRequest represents a request to list services (version-agnostic).
+type listServicesRequest struct{}
 
-	resp, err := sendReflectionRequestWithRetry(ctx, conn, req, maxRetries)
+// fileContainingSymbolRequest represents a request to get file by symbol (version-agnostic).
+type fileContainingSymbolRequest struct {
+	symbol string
+}
+
+// fileByFilenameRequest represents a request to get file by name (version-agnostic).
+type fileByFilenameRequest struct {
+	filename string
+}
+
+// reflectionRequest is a union type for version-agnostic requests.
+type reflectionRequest interface{}
+
+// reflectionResponse holds version-agnostic response data.
+type reflectionResponse struct {
+	services        []string
+	fileDescriptors [][]byte
+	errorCode       int32
+	errorMessage    string
+}
+
+func listServices(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]string, error) {
+	resp, err := sendReflectionRequestWithRetry(ctx, conn, listServicesRequest{}, maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %w", err)
 	}
-
-	listResp, ok := resp.MessageResponse.(*reflection.ServerReflectionResponse_ListServicesResponse)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response type: %T", resp.MessageResponse)
-	}
-
-	services := make([]string, 0, len(listResp.ListServicesResponse.Service))
-	for _, svc := range listResp.ListServicesResponse.Service {
-		services = append(services, svc.Name)
-	}
-
-	return services, nil
+	return resp.services, nil
 }
 
 func fetchFileDescriptorsForSymbol(ctx context.Context, conn *grpc.ClientConn, symbol string, seen map[string]*descriptorpb.FileDescriptorProto, maxRetries uint) error {
@@ -75,36 +114,21 @@ func fetchFileDescriptorsForSymbol(ctx context.Context, conn *grpc.ClientConn, s
 }
 
 func fetchFileDescriptorsBySymbol(ctx context.Context, conn *grpc.ClientConn, symbol string, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
-	req := &reflection.ServerReflectionRequest{
-		MessageRequest: &reflection.ServerReflectionRequest_FileContainingSymbol{
-			FileContainingSymbol: symbol,
-		},
-	}
-	return fetchFileDescriptorsFromRequest(ctx, conn, req, maxRetries)
+	return fetchFileDescriptorsFromRequest(ctx, conn, fileContainingSymbolRequest{symbol: symbol}, maxRetries)
 }
 
 func fetchFileDescriptorsByName(ctx context.Context, conn *grpc.ClientConn, name string, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
-	req := &reflection.ServerReflectionRequest{
-		MessageRequest: &reflection.ServerReflectionRequest_FileByFilename{
-			FileByFilename: name,
-		},
-	}
-	return fetchFileDescriptorsFromRequest(ctx, conn, req, maxRetries)
+	return fetchFileDescriptorsFromRequest(ctx, conn, fileByFilenameRequest{filename: name}, maxRetries)
 }
 
-func fetchFileDescriptorsFromRequest(ctx context.Context, conn *grpc.ClientConn, req *reflection.ServerReflectionRequest, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
+func fetchFileDescriptorsFromRequest(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
 	resp, err := sendReflectionRequestWithRetry(ctx, conn, req, maxRetries)
 	if err != nil {
 		return nil, err
 	}
 
-	fdResp, ok := resp.MessageResponse.(*reflection.ServerReflectionResponse_FileDescriptorResponse)
-	if !ok {
-		return nil, fmt.Errorf("unexpected response type: %T", resp.MessageResponse)
-	}
-
-	fdProtos := make([]*descriptorpb.FileDescriptorProto, 0, len(fdResp.FileDescriptorResponse.FileDescriptorProto))
-	for _, fdBytes := range fdResp.FileDescriptorResponse.FileDescriptorProto {
+	fdProtos := make([]*descriptorpb.FileDescriptorProto, 0, len(resp.fileDescriptors))
+	for _, fdBytes := range resp.fileDescriptors {
 		fdProto := &descriptorpb.FileDescriptorProto{}
 		if err := proto.Unmarshal(fdBytes, fdProto); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal file descriptor: %w", err)
@@ -148,8 +172,8 @@ func fetchFileDescriptorByName(ctx context.Context, conn *grpc.ClientConn, name 
 	return processDescriptors(ctx, conn, fdProtos, seen, maxRetries)
 }
 
-func sendReflectionRequestWithRetry(ctx context.Context, conn *grpc.ClientConn, req *reflection.ServerReflectionRequest, maxRetries uint) (*reflection.ServerReflectionResponse, error) {
-	var resp *reflection.ServerReflectionResponse
+func sendReflectionRequestWithRetry(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest, maxRetries uint) (*reflectionResponse, error) {
+	var resp *reflectionResponse
 	var err error
 
 	for attempt := uint(1); attempt <= maxRetries; attempt++ {
@@ -165,36 +189,184 @@ func sendReflectionRequestWithRetry(ctx context.Context, conn *grpc.ClientConn, 
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, err)
 }
 
-func sendReflectionRequest(ctx context.Context, conn *grpc.ClientConn, req *reflection.ServerReflectionRequest) (*reflection.ServerReflectionResponse, error) {
-	refClient := reflection.NewServerReflectionClient(conn)
+func sendReflectionRequest(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest) (*reflectionResponse, error) {
+	version := getConnVersion(conn)
+
+	// If we already know the version, use it directly
+	if version == reflectionV1 {
+		return sendReflectionRequestV1(ctx, conn, req)
+	}
+	if version == reflectionV1Alpha {
+		return sendReflectionRequestV1Alpha(ctx, conn, req)
+	}
+
+	// Try v1 first, then fall back to v1alpha
+	resp, err := sendReflectionRequestV1(ctx, conn, req)
+	if err == nil {
+		setConnVersion(conn, reflectionV1)
+		return resp, nil
+	}
+
+	// Check if it's an "Unimplemented" error (service not found)
+	if isUnimplementedError(err) {
+		resp, err = sendReflectionRequestV1Alpha(ctx, conn, req)
+		if err == nil {
+			setConnVersion(conn, reflectionV1Alpha)
+			return resp, nil
+		}
+	}
+
+	return nil, err
+}
+
+// isUnimplementedError checks if the error indicates the service is not implemented.
+func isUnimplementedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "Unimplemented") ||
+		strings.Contains(errStr, "unknown service")
+}
+
+// sendReflectionRequestV1 sends a request using the v1 reflection API.
+func sendReflectionRequestV1(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest) (*reflectionResponse, error) {
+	refClient := reflectionv1.NewServerReflectionClient(conn)
 	stream, err := refClient.ServerReflectionInfo(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create reflection stream: %w", err)
 	}
 	defer stream.CloseSend()
 
-	if err := stream.Send(req); err != nil {
+	v1Req := buildV1Request(req)
+	if err := stream.Send(v1Req); err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	resp, err := stream.Recv()
+	v1Resp, err := stream.Recv()
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive response: %w", err)
 	}
 
-	if err := checkErrorResponse(resp); err != nil {
-		return nil, err
-	}
-
-	return resp, nil
+	return parseV1Response(v1Resp)
 }
 
-// checkErrorResponse checks if the reflection response contains an error.
-func checkErrorResponse(resp *reflection.ServerReflectionResponse) error {
-	if errResp, ok := resp.MessageResponse.(*reflection.ServerReflectionResponse_ErrorResponse); ok {
-		return fmt.Errorf("reflection error: %s (code: %d)", errResp.ErrorResponse.ErrorMessage, errResp.ErrorResponse.ErrorCode)
+// sendReflectionRequestV1Alpha sends a request using the v1alpha reflection API.
+func sendReflectionRequestV1Alpha(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest) (*reflectionResponse, error) {
+	refClient := reflectionv1alpha.NewServerReflectionClient(conn)
+	stream, err := refClient.ServerReflectionInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reflection stream: %w", err)
 	}
-	return nil
+	defer stream.CloseSend()
+
+	v1alphaReq := buildV1AlphaRequest(req)
+	if err := stream.Send(v1alphaReq); err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	v1alphaResp, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive response: %w", err)
+	}
+
+	return parseV1AlphaResponse(v1alphaResp)
+}
+
+// buildV1Request converts a version-agnostic request to v1 format.
+func buildV1Request(req reflectionRequest) *reflectionv1.ServerReflectionRequest {
+	switch r := req.(type) {
+	case listServicesRequest:
+		return &reflectionv1.ServerReflectionRequest{
+			MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{
+				ListServices: "*",
+			},
+		}
+	case fileContainingSymbolRequest:
+		return &reflectionv1.ServerReflectionRequest{
+			MessageRequest: &reflectionv1.ServerReflectionRequest_FileContainingSymbol{
+				FileContainingSymbol: r.symbol,
+			},
+		}
+	case fileByFilenameRequest:
+		return &reflectionv1.ServerReflectionRequest{
+			MessageRequest: &reflectionv1.ServerReflectionRequest_FileByFilename{
+				FileByFilename: r.filename,
+			},
+		}
+	default:
+		return nil
+	}
+}
+
+// buildV1AlphaRequest converts a version-agnostic request to v1alpha format.
+func buildV1AlphaRequest(req reflectionRequest) *reflectionv1alpha.ServerReflectionRequest {
+	switch r := req.(type) {
+	case listServicesRequest:
+		return &reflectionv1alpha.ServerReflectionRequest{
+			MessageRequest: &reflectionv1alpha.ServerReflectionRequest_ListServices{
+				ListServices: "*",
+			},
+		}
+	case fileContainingSymbolRequest:
+		return &reflectionv1alpha.ServerReflectionRequest{
+			MessageRequest: &reflectionv1alpha.ServerReflectionRequest_FileContainingSymbol{
+				FileContainingSymbol: r.symbol,
+			},
+		}
+	case fileByFilenameRequest:
+		return &reflectionv1alpha.ServerReflectionRequest{
+			MessageRequest: &reflectionv1alpha.ServerReflectionRequest_FileByFilename{
+				FileByFilename: r.filename,
+			},
+		}
+	default:
+		return nil
+	}
+}
+
+// parseV1Response extracts data from a v1 response into version-agnostic format.
+func parseV1Response(resp *reflectionv1.ServerReflectionResponse) (*reflectionResponse, error) {
+	// Check for error response
+	if errResp, ok := resp.MessageResponse.(*reflectionv1.ServerReflectionResponse_ErrorResponse); ok {
+		return nil, fmt.Errorf("reflection error: %s (code: %d)", errResp.ErrorResponse.ErrorMessage, errResp.ErrorResponse.ErrorCode)
+	}
+
+	result := &reflectionResponse{}
+
+	switch r := resp.MessageResponse.(type) {
+	case *reflectionv1.ServerReflectionResponse_ListServicesResponse:
+		result.services = make([]string, 0, len(r.ListServicesResponse.Service))
+		for _, svc := range r.ListServicesResponse.Service {
+			result.services = append(result.services, svc.Name)
+		}
+	case *reflectionv1.ServerReflectionResponse_FileDescriptorResponse:
+		result.fileDescriptors = r.FileDescriptorResponse.FileDescriptorProto
+	}
+
+	return result, nil
+}
+
+// parseV1AlphaResponse extracts data from a v1alpha response into version-agnostic format.
+func parseV1AlphaResponse(resp *reflectionv1alpha.ServerReflectionResponse) (*reflectionResponse, error) {
+	// Check for error response
+	if errResp, ok := resp.MessageResponse.(*reflectionv1alpha.ServerReflectionResponse_ErrorResponse); ok {
+		return nil, fmt.Errorf("reflection error: %s (code: %d)", errResp.ErrorResponse.ErrorMessage, errResp.ErrorResponse.ErrorCode)
+	}
+
+	result := &reflectionResponse{}
+
+	switch r := resp.MessageResponse.(type) {
+	case *reflectionv1alpha.ServerReflectionResponse_ListServicesResponse:
+		result.services = make([]string, 0, len(r.ListServicesResponse.Service))
+		for _, svc := range r.ListServicesResponse.Service {
+			result.services = append(result.services, svc.Name)
+		}
+	case *reflectionv1alpha.ServerReflectionResponse_FileDescriptorResponse:
+		result.fileDescriptors = r.FileDescriptorResponse.FileDescriptorProto
+	}
+
+	return result, nil
 }
 
 // buildFileDescriptorSet builds a protoregistry.Files from the given descriptors.
