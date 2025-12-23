@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -253,6 +254,14 @@ type symbolFetch struct {
 	err  error
 }
 
+// ResolverStats contains cache hit/miss statistics for the resolver.
+type ResolverStats struct {
+	CacheHits      uint64 // Types found in cache (no gRPC call)
+	CacheMisses    uint64 // Types that required gRPC fetch
+	FallbackHits   uint64 // Types found in fallback registry
+	FallbackMisses uint64 // Types not found anywhere
+}
+
 // Resolver provides thread-safe resolution of protobuf types using server reflection.
 // It implements protoregistry.MessageTypeResolver and protoregistry.ExtensionTypeResolver.
 type Resolver struct {
@@ -263,6 +272,12 @@ type Resolver struct {
 	inProgress map[string]*symbolFetch // tracks in-progress fetches
 	maxRetries uint
 	mu         sync.Mutex
+
+	// Cache statistics (atomic for lock-free reads)
+	cacheHits      uint64
+	cacheMisses    uint64
+	fallbackHits   uint64
+	fallbackMisses uint64
 }
 
 func newResolver(ctx context.Context, files *protoregistry.Files, conn *grpc.ClientConn, maxRetries uint, fallback *FallbackRegistry) *Resolver {
@@ -319,6 +334,7 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 	desc, err := r.files.FindDescriptorByName(name)
 	if err == nil && desc != nil {
 		r.mu.Unlock()
+		atomic.AddUint64(&r.cacheHits, 1) // Cache hit - no gRPC needed
 		return createMessageType(desc, name)
 	}
 
@@ -331,17 +347,19 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 			// Try fallback before returning error
 			return r.tryFallback(name, fetch.err)
 		}
-		// Re-check after fetch completes
+		// Re-check after fetch completes (counted as cache hit since we didn't initiate fetch)
 		r.mu.Lock()
 		desc, err = r.files.FindDescriptorByName(name)
 		r.mu.Unlock()
 		if err != nil || desc == nil {
 			return r.tryFallback(name, fmt.Errorf("message %s not found after fetch: %w", name, err))
 		}
+		atomic.AddUint64(&r.cacheHits, 1) // Found after another goroutine fetched it
 		return createMessageType(desc, name)
 	}
 
-	// Start a new fetch
+	// Start a new fetch - this is a cache miss
+	atomic.AddUint64(&r.cacheMisses, 1)
 	fetch := &symbolFetch{done: make(chan struct{})}
 	r.inProgress[string(name)] = fetch
 	r.mu.Unlock()
@@ -375,15 +393,37 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 // Returns the message type if found, otherwise returns the original error.
 func (r *Resolver) tryFallback(name protoreflect.FullName, originalErr error) (protoreflect.MessageType, error) {
 	if r.fallback == nil {
+		atomic.AddUint64(&r.fallbackMisses, 1)
 		return nil, originalErr
 	}
 
 	desc, err := r.fallback.FindDescriptorByName(name)
 	if err != nil || desc == nil {
+		atomic.AddUint64(&r.fallbackMisses, 1)
 		return nil, originalErr
 	}
 
+	atomic.AddUint64(&r.fallbackHits, 1)
 	return createMessageType(desc, name)
+}
+
+// Stats returns cache hit/miss statistics for the resolver.
+// This is useful for diagnosing performance issues with type resolution.
+func (r *Resolver) Stats() ResolverStats {
+	return ResolverStats{
+		CacheHits:      atomic.LoadUint64(&r.cacheHits),
+		CacheMisses:    atomic.LoadUint64(&r.cacheMisses),
+		FallbackHits:   atomic.LoadUint64(&r.fallbackHits),
+		FallbackMisses: atomic.LoadUint64(&r.fallbackMisses),
+	}
+}
+
+// ResetStats resets all cache statistics to zero.
+func (r *Resolver) ResetStats() {
+	atomic.StoreUint64(&r.cacheHits, 0)
+	atomic.StoreUint64(&r.cacheMisses, 0)
+	atomic.StoreUint64(&r.fallbackHits, 0)
+	atomic.StoreUint64(&r.fallbackMisses, 0)
 }
 
 // doFetch performs the actual fetch without holding the lock
