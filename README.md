@@ -7,6 +7,7 @@ A dynamic gRPC client for Go that uses server reflection to invoke methods witho
 - Dynamic gRPC invocation without compiled protobuf stubs
 - Server reflection for automatic service discovery
 - On-demand type resolution for `Any` fields
+- Fallback registry for deprecated module types (e.g., Cosmos Hub liquidity)
 - Thread-safe concurrent access
 - Raw protobuf transaction decoding (Cosmos SDK)
 - Comprehensive query methods for all Cosmos SDK modules
@@ -66,8 +67,72 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 4MB)
     libyaci.WithDialTimeout(30 * time.Second),      // Connection timeout (default: no timeout)
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
+    libyaci.WithDeprecatedCosmosModules(),          // Enable fallback for deprecated modules
 )
 ```
+
+## Fallback Registry (Deprecated Modules)
+
+Some Cosmos SDK modules have been deprecated and removed from chains, but their transaction data still exists in historical blocks. Server reflection cannot provide descriptors for these removed modules, causing decode failures.
+
+The fallback registry provides pre-compiled proto descriptors for these deprecated types, enabling successful decoding of historical transactions.
+
+### Enabling Deprecated Module Support
+
+```go
+// Simple: Use global fallback with deprecated Cosmos modules
+client, err := libyaci.Dial(ctx, endpoint,
+    libyaci.WithDeprecatedCosmosModules(),
+)
+```
+
+### Currently Supported Deprecated Modules
+
+| Module | Package | Description |
+|--------|---------|-------------|
+| Liquidity (Gravity DEX) | `tendermint.liquidity.v1beta1` | AMM/DEX module removed from Cosmos Hub |
+
+Supported message types for the liquidity module:
+- `MsgCreatePool` / `MsgCreatePoolResponse`
+- `MsgDepositWithinBatch` / `MsgDepositWithinBatchResponse`
+- `MsgWithdrawWithinBatch` / `MsgWithdrawWithinBatchResponse`
+- `MsgSwapWithinBatch` / `MsgSwapWithinBatchResponse`
+
+### Advanced: Custom Fallback Registry
+
+```go
+// Create a custom fallback registry
+fb := libyaci.NewFallbackRegistry()
+
+// Register your own deprecated types
+fb.RegisterFileDescriptor(myDeprecatedProto)
+
+// Use the custom registry
+client, err := libyaci.Dial(ctx, endpoint,
+    libyaci.WithFallbackRegistry(fb),
+)
+```
+
+### Shared Global Fallback
+
+Multiple clients can share the same fallback registry:
+
+```go
+// Register once at startup
+libyaci.GlobalFallback().RegisterDeprecatedCosmosModules()
+
+// All clients using WithGlobalFallback() share the same descriptors
+client1, _ := libyaci.Dial(ctx, endpoint1, libyaci.WithGlobalFallback())
+client2, _ := libyaci.Dial(ctx, endpoint2, libyaci.WithGlobalFallback())
+```
+
+### Fallback Options
+
+| Option | Description |
+|--------|-------------|
+| `WithDeprecatedCosmosModules()` | Register deprecated Cosmos SDK modules (liquidity, etc.) to the global fallback |
+| `WithGlobalFallback()` | Use the shared global fallback registry |
+| `WithFallbackRegistry(fb)` | Use a custom fallback registry |
 
 ## Core Methods
 
@@ -453,6 +518,7 @@ The client is safe for concurrent use from multiple goroutines. The internal typ
 4. Creates dynamic request messages from JSON input
 5. Invokes methods and marshals responses back to JSON
 6. Fetches additional descriptors on-demand for unknown `Any` types
+7. Falls back to pre-compiled descriptors for deprecated types not in reflection
 
 ## Example CLI
 

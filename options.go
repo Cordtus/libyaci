@@ -12,11 +12,14 @@ const (
 )
 
 type options struct {
-	insecure       bool
-	maxRetries     uint
-	maxRecvMsgSize int
-	dialTimeout    time.Duration
-	dialOpts       []grpc.DialOption
+	insecure           bool
+	maxRetries         uint
+	maxRecvMsgSize     int
+	dialTimeout        time.Duration
+	dialOpts           []grpc.DialOption
+	fallback           *FallbackRegistry
+	useGlobalFallback  bool
+	registerDeprecated bool
 }
 
 func defaultOptions() *options {
@@ -64,5 +67,35 @@ func WithDialTimeout(timeout time.Duration) Option {
 func WithDialOptions(opts ...grpc.DialOption) Option {
 	return func(o *options) {
 		o.dialOpts = append(o.dialOpts, opts...)
+	}
+}
+
+// WithFallbackRegistry sets a custom fallback registry for resolving types
+// that are not available via server reflection (e.g., deprecated modules).
+func WithFallbackRegistry(fb *FallbackRegistry) Option {
+	return func(o *options) {
+		o.fallback = fb
+	}
+}
+
+// WithGlobalFallback uses the global fallback registry (shared across clients).
+// This is useful when multiple clients need to share the same fallback descriptors.
+func WithGlobalFallback() Option {
+	return func(o *options) {
+		o.useGlobalFallback = true
+	}
+}
+
+// WithDeprecatedCosmosModules registers proto descriptors for deprecated
+// Cosmos SDK modules (e.g., tendermint.liquidity.v1beta1) to the fallback registry.
+// This option requires either WithFallbackRegistry or WithGlobalFallback to be set;
+// if neither is set, this option will use the global fallback registry.
+func WithDeprecatedCosmosModules() Option {
+	return func(o *options) {
+		o.registerDeprecated = true
+		// If no fallback is configured, use global fallback
+		if o.fallback == nil && !o.useGlobalFallback {
+			o.useGlobalFallback = true
+		}
 	}
 }

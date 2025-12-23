@@ -71,7 +71,23 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		return nil, fmt.Errorf("failed to build descriptor set: %w", err)
 	}
 
-	resolver := newResolver(clientCtx, files, conn, o.maxRetries)
+	// Setup fallback registry
+	var fallback *FallbackRegistry
+	if o.fallback != nil {
+		fallback = o.fallback
+	} else if o.useGlobalFallback {
+		fallback = GlobalFallback()
+	}
+
+	// Register deprecated modules if requested
+	if o.registerDeprecated && fallback != nil {
+		if err := fallback.RegisterDeprecatedCosmosModules(); err != nil {
+			// Log warning but don't fail - deprecated modules are optional
+			// The error is silently ignored as this is a best-effort feature
+		}
+	}
+
+	resolver := newResolver(clientCtx, files, conn, o.maxRetries, fallback)
 
 	return &Client{
 		conn:     conn,
@@ -241,6 +257,7 @@ type symbolFetch struct {
 // It implements protoregistry.MessageTypeResolver and protoregistry.ExtensionTypeResolver.
 type Resolver struct {
 	files      *protoregistry.Files
+	fallback   *FallbackRegistry // fallback for deprecated types not in server reflection
 	conn       *grpc.ClientConn
 	ctx        context.Context
 	inProgress map[string]*symbolFetch // tracks in-progress fetches
@@ -248,9 +265,10 @@ type Resolver struct {
 	mu         sync.Mutex
 }
 
-func newResolver(ctx context.Context, files *protoregistry.Files, conn *grpc.ClientConn, maxRetries uint) *Resolver {
+func newResolver(ctx context.Context, files *protoregistry.Files, conn *grpc.ClientConn, maxRetries uint, fallback *FallbackRegistry) *Resolver {
 	return &Resolver{
 		files:      files,
+		fallback:   fallback,
 		conn:       conn,
 		ctx:        ctx,
 		inProgress: make(map[string]*symbolFetch),
@@ -293,6 +311,8 @@ func (r *Resolver) FindMethodDescriptor(serviceName, methodName string) (protore
 
 // FindMessageByName finds a message type by its full name.
 // This method is called automatically when unmarshaling protobuf Any types.
+// It first checks the primary registry, then attempts server reflection,
+// and finally falls back to the fallback registry for deprecated types.
 func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.MessageType, error) {
 	// First, check if already registered
 	r.mu.Lock()
@@ -308,14 +328,15 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 		// Wait for the in-progress fetch to complete
 		<-fetch.done
 		if fetch.err != nil {
-			return nil, fetch.err
+			// Try fallback before returning error
+			return r.tryFallback(name, fetch.err)
 		}
 		// Re-check after fetch completes
 		r.mu.Lock()
 		desc, err = r.files.FindDescriptorByName(name)
 		r.mu.Unlock()
 		if err != nil || desc == nil {
-			return nil, fmt.Errorf("message %s not found after fetch: %w", name, err)
+			return r.tryFallback(name, fmt.Errorf("message %s not found after fetch: %w", name, err))
 		}
 		return createMessageType(desc, name)
 	}
@@ -336,14 +357,30 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 
 	if fetchErr != nil {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", name, fetchErr)
+		// Try fallback before returning error
+		return r.tryFallback(name, fmt.Errorf("failed to fetch descriptor for %s: %w", name, fetchErr))
 	}
 
 	desc, err = r.files.FindDescriptorByName(name)
 	r.mu.Unlock()
 
 	if err != nil || desc == nil {
-		return nil, fmt.Errorf("message %s not found after fetch: %w", name, err)
+		return r.tryFallback(name, fmt.Errorf("message %s not found after fetch: %w", name, err))
+	}
+
+	return createMessageType(desc, name)
+}
+
+// tryFallback attempts to find the message in the fallback registry.
+// Returns the message type if found, otherwise returns the original error.
+func (r *Resolver) tryFallback(name protoreflect.FullName, originalErr error) (protoreflect.MessageType, error) {
+	if r.fallback == nil {
+		return nil, originalErr
+	}
+
+	desc, err := r.fallback.FindDescriptorByName(name)
+	if err != nil || desc == nil {
+		return nil, originalErr
 	}
 
 	return createMessageType(desc, name)
