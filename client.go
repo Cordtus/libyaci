@@ -181,10 +181,11 @@ func (c *Client) invokeOnce(fullMethodPath string, methodDesc protoreflect.Metho
 	if err != nil {
 		// Check if this is a UTF-8 error that we can recover from
 		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
-			// Attempt to patch the field from string to bytes and retry
-			if patchErr := c.resolver.PatchFieldToBytes(msgType, fieldName); patchErr == nil {
-				// Retry marshal after patching
-				return mo.Marshal(outputMsg)
+			// Create a temporary patched resolver (does not modify the original)
+			if patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName); patchErr == nil {
+				// Retry marshal with the temporary patched resolver
+				patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
+				return patchedMo.Marshal(outputMsg)
 			}
 		}
 		return nil, err
@@ -557,28 +558,29 @@ func parseUTF8Error(errStr string) (string, string, bool) {
 	return matches[1], matches[2], true
 }
 
-// PatchFieldToBytes dynamically changes a field from TYPE_STRING to TYPE_BYTES
-// in the resolver's file descriptor registry. This is used to recover from UTF-8
+// CreatePatchedResolver creates a new temporary Resolver with a specific field
+// patched from TYPE_STRING to TYPE_BYTES. This is used to recover from UTF-8
 // validation errors when string fields contain binary data.
-func (r *Resolver) PatchFieldToBytes(messageType, fieldName string) error {
+// The original resolver is NOT modified - the returned resolver is for one-time use.
+func (r *Resolver) CreatePatchedResolver(messageType, fieldName string) (*Resolver, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Find the message descriptor
 	desc, err := r.files.FindDescriptorByName(protoreflect.FullName(messageType))
 	if err != nil {
-		return fmt.Errorf("message type %s not found: %w", messageType, err)
+		return nil, fmt.Errorf("message type %s not found: %w", messageType, err)
 	}
 
 	msgDesc, ok := desc.(protoreflect.MessageDescriptor)
 	if !ok {
-		return fmt.Errorf("%s is not a message type", messageType)
+		return nil, fmt.Errorf("%s is not a message type", messageType)
 	}
 
 	// Get the file descriptor that contains this message
 	fileDesc := msgDesc.ParentFile()
 	if fileDesc == nil {
-		return fmt.Errorf("no parent file for message %s", messageType)
+		return nil, fmt.Errorf("no parent file for message %s", messageType)
 	}
 
 	// Get the file path to fetch the raw proto
@@ -587,7 +589,7 @@ func (r *Resolver) PatchFieldToBytes(messageType, fieldName string) error {
 	// Fetch the file descriptor proto again so we can modify it
 	fdProtos, fetchErr := fetchFileDescriptorsByName(r.ctx, r.conn, filePath, r.maxRetries)
 	if fetchErr != nil {
-		return fmt.Errorf("failed to fetch descriptor for %s: %w", filePath, fetchErr)
+		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", filePath, fetchErr)
 	}
 
 	// Find and patch the field
@@ -603,11 +605,10 @@ func (r *Resolver) PatchFieldToBytes(messageType, fieldName string) error {
 	}
 
 	if !patched {
-		return fmt.Errorf("field %s.%s not found in descriptors", messageType, fieldName)
+		return nil, fmt.Errorf("field %s.%s not found in descriptors", messageType, fieldName)
 	}
 
-	// Re-register the patched file descriptor
-	// First, unregister the old one by creating a new Files registry
+	// Create a new Files registry for the patched resolver
 	newFiles := &protoregistry.Files{}
 
 	// Copy all existing files except the one we're patching
@@ -622,23 +623,29 @@ func (r *Resolver) PatchFieldToBytes(messageType, fieldName string) error {
 		return true
 	})
 	if copyErr != nil {
-		return fmt.Errorf("failed to copy file descriptors: %w", copyErr)
+		return nil, fmt.Errorf("failed to copy file descriptors: %w", copyErr)
 	}
 
 	// Register the patched file
 	for _, fdProto := range fdProtos {
 		fd, err := protodesc.NewFile(fdProto, newFiles)
 		if err != nil {
-			return fmt.Errorf("failed to create patched file descriptor for %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to create patched file descriptor for %s: %w", filePath, err)
 		}
 		if err := newFiles.RegisterFile(fd); err != nil {
-			return fmt.Errorf("failed to register patched file %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to register patched file %s: %w", filePath, err)
 		}
 	}
 
-	// Replace the files registry
-	r.files = newFiles
-	return nil
+	// Return a new resolver with the patched files (original unchanged)
+	return &Resolver{
+		files:      newFiles,
+		fallback:   r.fallback,
+		conn:       r.conn,
+		ctx:        r.ctx,
+		inProgress: make(map[string]*symbolFetch),
+		maxRetries: r.maxRetries,
+	}, nil
 }
 
 // patchFieldInProto finds and patches a field from STRING to BYTES in a file descriptor proto.
