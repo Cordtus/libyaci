@@ -321,3 +321,189 @@ func containsAt(s, substr string, start int) bool {
 	}
 	return false
 }
+
+func TestParseUTF8Error(t *testing.T) {
+	tests := []struct {
+		name          string
+		errStr        string
+		wantMsgType   string
+		wantFieldName string
+		wantOK        bool
+	}{
+		{
+			name:          "interchain security consumer_key error",
+			errStr:        `proto: google.protobuf.Any: unable to unmarshal "/interchain_security.ccv.provider.v1.MsgAssignConsumerKey": field interchain_security.ccv.provider.v1.MsgAssignConsumerKey.consumer_key contains invalid UTF-8`,
+			wantMsgType:   "interchain_security.ccv.provider.v1.MsgAssignConsumerKey",
+			wantFieldName: "consumer_key",
+			wantOK:        true,
+		},
+		{
+			name:          "simple message.field error",
+			errStr:        `field cosmos.base.abci.v1beta1.TxResponse.raw_log contains invalid UTF-8`,
+			wantMsgType:   "cosmos.base.abci.v1beta1.TxResponse",
+			wantFieldName: "raw_log",
+			wantOK:        true,
+		},
+		{
+			name:          "nested message error",
+			errStr:        `field some.package.OuterMsg.inner_field contains invalid UTF-8`,
+			wantMsgType:   "some.package.OuterMsg",
+			wantFieldName: "inner_field",
+			wantOK:        true,
+		},
+		{
+			name:   "no UTF-8 error",
+			errStr: `failed to unmarshal: unexpected end of JSON input`,
+			wantOK: false,
+		},
+		{
+			name:   "UTF-8 mentioned but different format",
+			errStr: `invalid UTF-8 in file`,
+			wantOK: false,
+		},
+		{
+			name:   "empty string",
+			errStr: ``,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgType, fieldName, ok := parseUTF8Error(tt.errStr)
+			if ok != tt.wantOK {
+				t.Errorf("parseUTF8Error ok = %v, want %v", ok, tt.wantOK)
+				return
+			}
+			if !tt.wantOK {
+				return
+			}
+			if msgType != tt.wantMsgType {
+				t.Errorf("parseUTF8Error msgType = %q, want %q", msgType, tt.wantMsgType)
+			}
+			if fieldName != tt.wantFieldName {
+				t.Errorf("parseUTF8Error fieldName = %q, want %q", fieldName, tt.wantFieldName)
+			}
+		})
+	}
+}
+
+func TestPatchFieldInProto(t *testing.T) {
+	tests := []struct {
+		name        string
+		fdProto     *descriptorpb.FileDescriptorProto
+		messageType string
+		fieldName   string
+		wantPatched bool
+	}{
+		{
+			name: "patch simple field",
+			fdProto: &descriptorpb.FileDescriptorProto{
+				Name:    proto.String("test.proto"),
+				Package: proto.String("test.package"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: proto.String("TestMessage"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{
+								Name:   proto.String("string_field"),
+								Number: proto.Int32(1),
+								Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+							},
+						},
+					},
+				},
+			},
+			messageType: "test.package.TestMessage",
+			fieldName:   "string_field",
+			wantPatched: true,
+		},
+		{
+			name: "field not found",
+			fdProto: &descriptorpb.FileDescriptorProto{
+				Name:    proto.String("test.proto"),
+				Package: proto.String("test.package"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: proto.String("TestMessage"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{
+								Name:   proto.String("other_field"),
+								Number: proto.Int32(1),
+								Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+							},
+						},
+					},
+				},
+			},
+			messageType: "test.package.TestMessage",
+			fieldName:   "nonexistent_field",
+			wantPatched: false,
+		},
+		{
+			name: "field is already bytes",
+			fdProto: &descriptorpb.FileDescriptorProto{
+				Name:    proto.String("test.proto"),
+				Package: proto.String("test.package"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: proto.String("TestMessage"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{
+								Name:   proto.String("bytes_field"),
+								Number: proto.Int32(1),
+								Type:   descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum(),
+							},
+						},
+					},
+				},
+			},
+			messageType: "test.package.TestMessage",
+			fieldName:   "bytes_field",
+			wantPatched: false,
+		},
+		{
+			name: "message not found",
+			fdProto: &descriptorpb.FileDescriptorProto{
+				Name:    proto.String("test.proto"),
+				Package: proto.String("test.package"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: proto.String("OtherMessage"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{
+								Name:   proto.String("string_field"),
+								Number: proto.Int32(1),
+								Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+							},
+						},
+					},
+				},
+			},
+			messageType: "test.package.TestMessage",
+			fieldName:   "string_field",
+			wantPatched: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patched := patchFieldInProto(tt.fdProto, tt.messageType, tt.fieldName)
+			if patched != tt.wantPatched {
+				t.Errorf("patchFieldInProto = %v, want %v", patched, tt.wantPatched)
+			}
+			if tt.wantPatched {
+				// Verify the field type was actually changed
+				for _, msg := range tt.fdProto.GetMessageType() {
+					for _, field := range msg.GetField() {
+						if field.GetName() == tt.fieldName {
+							if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_BYTES {
+								t.Errorf("field type = %v, want TYPE_BYTES", field.GetType())
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package libyaci
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,7 +177,19 @@ func (c *Client) invokeOnce(fullMethodPath string, methodDesc protoreflect.Metho
 	}
 
 	mo := protojson.MarshalOptions{Resolver: c.resolver}
-	return mo.Marshal(outputMsg)
+	result, err := mo.Marshal(outputMsg)
+	if err != nil {
+		// Check if this is a UTF-8 error that we can recover from
+		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
+			// Attempt to patch the field from string to bytes and retry
+			if patchErr := c.resolver.PatchFieldToBytes(msgType, fieldName); patchErr == nil {
+				// Retry marshal after patching
+				return mo.Marshal(outputMsg)
+			}
+		}
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) invokeRawOnce(fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request []byte) (*dynamicpb.Message, error) {
@@ -520,4 +533,164 @@ func createMessageType(desc protoreflect.Descriptor, name protoreflect.FullName)
 	}
 
 	return dynamicpb.NewMessageType(msgDesc), nil
+}
+
+// utf8ErrorRegex matches protojson UTF-8 errors like:
+// "field package.Message.field_name contains invalid UTF-8"
+var utf8ErrorRegex = regexp.MustCompile(`field\s+(\S+)\.(\w+)\s+contains\s+invalid\s+UTF-8`)
+
+// parseUTF8Error parses a protojson error message to extract the message type and field name
+// when the error is about invalid UTF-8 in a string field.
+// Returns (messageType, fieldName, true) if successfully parsed, otherwise ("", "", false).
+func parseUTF8Error(errStr string) (string, string, bool) {
+	if !strings.Contains(errStr, "invalid UTF-8") {
+		return "", "", false
+	}
+
+	matches := utf8ErrorRegex.FindStringSubmatch(errStr)
+	if len(matches) < 3 {
+		return "", "", false
+	}
+
+	// matches[1] is the full message type path (e.g., "interchain_security.ccv.provider.v1.MsgAssignConsumerKey")
+	// matches[2] is the field name (e.g., "consumer_key")
+	return matches[1], matches[2], true
+}
+
+// PatchFieldToBytes dynamically changes a field from TYPE_STRING to TYPE_BYTES
+// in the resolver's file descriptor registry. This is used to recover from UTF-8
+// validation errors when string fields contain binary data.
+func (r *Resolver) PatchFieldToBytes(messageType, fieldName string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Find the message descriptor
+	desc, err := r.files.FindDescriptorByName(protoreflect.FullName(messageType))
+	if err != nil {
+		return fmt.Errorf("message type %s not found: %w", messageType, err)
+	}
+
+	msgDesc, ok := desc.(protoreflect.MessageDescriptor)
+	if !ok {
+		return fmt.Errorf("%s is not a message type", messageType)
+	}
+
+	// Get the file descriptor that contains this message
+	fileDesc := msgDesc.ParentFile()
+	if fileDesc == nil {
+		return fmt.Errorf("no parent file for message %s", messageType)
+	}
+
+	// Get the file path to fetch the raw proto
+	filePath := fileDesc.Path()
+
+	// Fetch the file descriptor proto again so we can modify it
+	fdProtos, fetchErr := fetchFileDescriptorsByName(r.ctx, r.conn, filePath, r.maxRetries)
+	if fetchErr != nil {
+		return fmt.Errorf("failed to fetch descriptor for %s: %w", filePath, fetchErr)
+	}
+
+	// Find and patch the field
+	var patched bool
+	for _, fdProto := range fdProtos {
+		if fdProto.GetName() != filePath {
+			continue
+		}
+		if patchFieldInProto(fdProto, messageType, fieldName) {
+			patched = true
+			break
+		}
+	}
+
+	if !patched {
+		return fmt.Errorf("field %s.%s not found in descriptors", messageType, fieldName)
+	}
+
+	// Re-register the patched file descriptor
+	// First, unregister the old one by creating a new Files registry
+	newFiles := &protoregistry.Files{}
+
+	// Copy all existing files except the one we're patching
+	var copyErr error
+	r.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		if fd.Path() != filePath {
+			if err := newFiles.RegisterFile(fd); err != nil {
+				copyErr = err
+				return false
+			}
+		}
+		return true
+	})
+	if copyErr != nil {
+		return fmt.Errorf("failed to copy file descriptors: %w", copyErr)
+	}
+
+	// Register the patched file
+	for _, fdProto := range fdProtos {
+		fd, err := protodesc.NewFile(fdProto, newFiles)
+		if err != nil {
+			return fmt.Errorf("failed to create patched file descriptor for %s: %w", filePath, err)
+		}
+		if err := newFiles.RegisterFile(fd); err != nil {
+			return fmt.Errorf("failed to register patched file %s: %w", filePath, err)
+		}
+	}
+
+	// Replace the files registry
+	r.files = newFiles
+	return nil
+}
+
+// patchFieldInProto finds and patches a field from STRING to BYTES in a file descriptor proto.
+// Handles nested messages by splitting the message type path.
+func patchFieldInProto(fdProto *descriptorpb.FileDescriptorProto, messageType, fieldName string) bool {
+	// Get the simple message name (last part after the package)
+	pkg := fdProto.GetPackage()
+	msgName := messageType
+	if pkg != "" && strings.HasPrefix(messageType, pkg+".") {
+		msgName = messageType[len(pkg)+1:]
+	}
+
+	// Handle nested messages (e.g., "OuterMessage.InnerMessage")
+	parts := strings.Split(msgName, ".")
+
+	// Find the message in the file
+	for _, msgType := range fdProto.GetMessageType() {
+		if patchMessageField(msgType, parts, fieldName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// patchMessageField recursively searches for and patches a field in a message descriptor.
+func patchMessageField(msgType *descriptorpb.DescriptorProto, pathParts []string, fieldName string) bool {
+	if len(pathParts) == 0 {
+		return false
+	}
+
+	if msgType.GetName() != pathParts[0] {
+		return false
+	}
+
+	// If this is the target message, find and patch the field
+	if len(pathParts) == 1 {
+		for _, field := range msgType.GetField() {
+			if field.GetName() == fieldName && field.GetType() == descriptorpb.FieldDescriptorProto_TYPE_STRING {
+				field.Type = descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()
+				return true
+			}
+		}
+		return false
+	}
+
+	// Otherwise, search in nested types
+	for _, nested := range msgType.GetNestedType() {
+		if patchMessageField(nested, pathParts[1:], fieldName) {
+			return true
+		}
+	}
+
+	return false
 }
