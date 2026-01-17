@@ -3,9 +3,25 @@ package libyaci
 import (
 	"testing"
 
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
+
+// Helper functions for creating proto descriptors in tests
+func strPtr(s string) *string {
+	return &s
+}
+
+func int32Ptr(i int32) *int32 {
+	return &i
+}
+
+func typePtr(t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto_Type {
+	return &t
+}
+
+func labelPtr(l descriptorpb.FieldDescriptorProto_Label) *descriptorpb.FieldDescriptorProto_Label {
+	return &l
+}
 
 func TestNewFallbackRegistry(t *testing.T) {
 	fb := NewFallbackRegistry()
@@ -107,80 +123,6 @@ func TestFallbackRegistry_FindDescriptorByName(t *testing.T) {
 	}
 }
 
-func TestFallbackRegistry_LiquidityModule(t *testing.T) {
-	fb := NewFallbackRegistry()
-
-	err := fb.RegisterDeprecatedCosmosModules()
-	if err != nil {
-		t.Fatalf("RegisterDeprecatedCosmosModules failed: %v", err)
-	}
-
-	// Check all liquidity messages are resolvable
-	messages := []protoreflect.FullName{
-		"tendermint.liquidity.v1beta1.MsgSwapWithinBatch",
-		"tendermint.liquidity.v1beta1.MsgSwapWithinBatchResponse",
-		"tendermint.liquidity.v1beta1.MsgDepositWithinBatch",
-		"tendermint.liquidity.v1beta1.MsgDepositWithinBatchResponse",
-		"tendermint.liquidity.v1beta1.MsgWithdrawWithinBatch",
-		"tendermint.liquidity.v1beta1.MsgWithdrawWithinBatchResponse",
-		"tendermint.liquidity.v1beta1.MsgCreatePool",
-		"tendermint.liquidity.v1beta1.MsgCreatePoolResponse",
-	}
-
-	for _, msgName := range messages {
-		desc, err := fb.FindDescriptorByName(msgName)
-		if err != nil {
-			t.Errorf("Failed to find %s: %v", msgName, err)
-			continue
-		}
-		if desc == nil {
-			t.Errorf("FindDescriptorByName returned nil for %s", msgName)
-			continue
-		}
-		if desc.FullName() != msgName {
-			t.Errorf("Expected full name '%s', got '%s'", msgName, desc.FullName())
-		}
-	}
-}
-
-func TestFallbackRegistry_CoinDependency(t *testing.T) {
-	fb := NewFallbackRegistry()
-
-	err := fb.RegisterDeprecatedCosmosModules()
-	if err != nil {
-		t.Fatalf("RegisterDeprecatedCosmosModules failed: %v", err)
-	}
-
-	// Verify cosmos.base.v1beta1.Coin is registered (dependency of liquidity)
-	desc, err := fb.FindDescriptorByName("cosmos.base.v1beta1.Coin")
-	if err != nil {
-		t.Fatalf("Failed to find Coin: %v", err)
-	}
-	if desc == nil {
-		t.Fatal("FindDescriptorByName returned nil for Coin")
-	}
-
-	// Check Coin has the expected fields
-	msgDesc, ok := desc.(protoreflect.MessageDescriptor)
-	if !ok {
-		t.Fatal("Coin descriptor is not a MessageDescriptor")
-	}
-
-	fields := msgDesc.Fields()
-	if fields.Len() != 2 {
-		t.Fatalf("Expected 2 fields on Coin, got %d", fields.Len())
-	}
-
-	denomField := fields.ByName("denom")
-	if denomField == nil {
-		t.Fatal("Coin missing 'denom' field")
-	}
-	amountField := fields.ByName("amount")
-	if amountField == nil {
-		t.Fatal("Coin missing 'amount' field")
-	}
-}
-
 func TestFallbackRegistry_MergeInto(t *testing.T) {
 	fb := NewFallbackRegistry()
 
@@ -223,26 +165,34 @@ func TestFallbackRegistry_MergeInto(t *testing.T) {
 func TestFallbackRegistry_ThreadSafety(t *testing.T) {
 	fb := NewFallbackRegistry()
 
-	// Run concurrent registrations and lookups
+	// Register a test file for lookup
+	fdProto := &descriptorpb.FileDescriptorProto{
+		Name:    strPtr("thread/test.proto"),
+		Package: strPtr("thread.test"),
+		Syntax:  strPtr("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name:  strPtr("ThreadTest"),
+				Field: []*descriptorpb.FieldDescriptorProto{},
+			},
+		},
+	}
+	if err := fb.RegisterFileDescriptor(fdProto); err != nil {
+		t.Fatalf("RegisterFileDescriptor failed: %v", err)
+	}
+
+	// Run concurrent lookups
 	done := make(chan bool)
 
-	// Goroutine 1: Register deprecated modules
-	go func() {
-		for i := 0; i < 10; i++ {
-			_ = fb.RegisterDeprecatedCosmosModules()
-		}
-		done <- true
-	}()
-
-	// Goroutine 2: Lookup messages
+	// Goroutine 1: Lookup messages
 	go func() {
 		for i := 0; i < 100; i++ {
-			_, _ = fb.FindDescriptorByName("tendermint.liquidity.v1beta1.MsgSwapWithinBatch")
+			_, _ = fb.FindDescriptorByName("thread.test.ThreadTest")
 		}
 		done <- true
 	}()
 
-	// Goroutine 3: Access files
+	// Goroutine 2: Access files
 	go func() {
 		for i := 0; i < 100; i++ {
 			_ = fb.Files()
@@ -253,22 +203,6 @@ func TestFallbackRegistry_ThreadSafety(t *testing.T) {
 	// Wait for all goroutines
 	<-done
 	<-done
-	<-done
-}
-
-func TestWithDeprecatedCosmosModules_Option(t *testing.T) {
-	// Test that the option sets the correct flags
-	o := defaultOptions()
-
-	opt := WithDeprecatedCosmosModules()
-	opt(o)
-
-	if !o.registerDeprecated {
-		t.Error("WithDeprecatedCosmosModules should set registerDeprecated to true")
-	}
-	if !o.useGlobalFallback {
-		t.Error("WithDeprecatedCosmosModules should set useGlobalFallback to true when no fallback is configured")
-	}
 }
 
 func TestWithFallbackRegistry_Option(t *testing.T) {
@@ -291,5 +225,19 @@ func TestWithGlobalFallback_Option(t *testing.T) {
 
 	if !o.useGlobalFallback {
 		t.Error("WithGlobalFallback should set useGlobalFallback to true")
+	}
+}
+
+func TestWithProtoDir_Option(t *testing.T) {
+	o := defaultOptions()
+
+	opt := WithProtoDir("/path/to/protos")
+	opt(o)
+
+	if o.protoDir != "/path/to/protos" {
+		t.Error("WithProtoDir should set protoDir")
+	}
+	if !o.useGlobalFallback {
+		t.Error("WithProtoDir should enable useGlobalFallback when no fallback is configured")
 	}
 }

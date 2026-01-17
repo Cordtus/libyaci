@@ -81,14 +81,6 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		fallback = GlobalFallback()
 	}
 
-	// Register deprecated modules if requested
-	if o.registerDeprecated && fallback != nil {
-		if err := fallback.RegisterDeprecatedCosmosModules(); err != nil {
-			// Log warning but don't fail - deprecated modules are optional
-			// The error is silently ignored as this is a best-effort feature
-		}
-	}
-
 	// Setup local proto directory if configured
 	if o.protoDir != "" && fallback != nil {
 		protoDir := NewProtoDir(o.protoDir)

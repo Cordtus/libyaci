@@ -12,15 +12,14 @@ const (
 )
 
 type options struct {
-	insecure           bool
-	maxRetries         uint
-	maxRecvMsgSize     int
-	dialTimeout        time.Duration
-	dialOpts           []grpc.DialOption
-	fallback           *FallbackRegistry
-	useGlobalFallback  bool
-	registerDeprecated bool
-	protoDir           string // path to local proto files for fallback
+	insecure          bool
+	maxRetries        uint
+	maxRecvMsgSize    int
+	dialTimeout       time.Duration
+	dialOpts          []grpc.DialOption
+	fallback          *FallbackRegistry
+	useGlobalFallback bool
+	protoDir          string // path to local proto files for fallback
 }
 
 func defaultOptions() *options {
@@ -84,20 +83,6 @@ func WithFallbackRegistry(fb *FallbackRegistry) Option {
 func WithGlobalFallback() Option {
 	return func(o *options) {
 		o.useGlobalFallback = true
-	}
-}
-
-// WithDeprecatedCosmosModules registers proto descriptors for deprecated
-// Cosmos SDK modules (e.g., tendermint.liquidity.v1beta1) to the fallback registry.
-// This option requires either WithFallbackRegistry or WithGlobalFallback to be set;
-// if neither is set, this option will use the global fallback registry.
-func WithDeprecatedCosmosModules() Option {
-	return func(o *options) {
-		o.registerDeprecated = true
-		// If no fallback is configured, use global fallback
-		if o.fallback == nil && !o.useGlobalFallback {
-			o.useGlobalFallback = true
-		}
 	}
 }
 

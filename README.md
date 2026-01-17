@@ -7,7 +7,7 @@ A dynamic gRPC client for Go that uses server reflection to invoke methods witho
 - Dynamic gRPC invocation without compiled protobuf stubs
 - Server reflection for automatic service discovery
 - On-demand type resolution for `Any` fields
-- Fallback registry for deprecated module types (e.g., Cosmos Hub liquidity)
+- Local proto directory fallback for deprecated/unavailable types
 - Thread-safe concurrent access
 - Raw protobuf transaction decoding (Cosmos SDK)
 - Comprehensive query methods for all Cosmos SDK modules
@@ -68,45 +68,63 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 4MB)
     libyaci.WithDialTimeout(30 * time.Second),      // Connection timeout (default: no timeout)
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
-    libyaci.WithDeprecatedCosmosModules(),          // Enable fallback for deprecated modules
+    libyaci.WithProtoDir("./protos"),               // Local proto files for deprecated types
 )
 ```
 
-## Fallback Registry (Deprecated Modules)
+## Local Proto Directory (Deprecated/Unavailable Types)
 
 Some Cosmos SDK modules have been deprecated and removed from chains, but their transaction data still exists in historical blocks. Server reflection cannot provide descriptors for these removed modules, causing decode failures.
 
-The fallback registry provides pre-compiled proto descriptors for these deprecated types, enabling successful decoding of historical transactions.
+The `WithProtoDir()` option allows you to provide local `.proto` files that will be used as a fallback when server reflection fails to resolve a type.
 
-### Enabling Deprecated Module Support
+### Basic Usage
 
 ```go
-// Simple: Use global fallback with deprecated Cosmos modules
 client, err := libyaci.Dial(ctx, endpoint,
-    libyaci.WithDeprecatedCosmosModules(),
+    libyaci.WithProtoDir("./protos"),
 )
 ```
 
-### Currently Supported Deprecated Modules
+When a type like `tendermint.liquidity.v1beta1.MsgSwapWithinBatch` cannot be resolved via server reflection, the client will look for it in the local proto files.
+
+### Directory Structure
+
+The proto directory should mirror the package path structure:
+
+```
+protos/
+  tendermint/liquidity/v1beta1/tx.proto
+  cosmos/base/v1beta1/coin.proto
+  cosmos/staking/v1beta1/tx.proto
+```
+
+Proto files are loaded lazily on first type resolution failure. Standard protobuf imports (`google/protobuf/*`) are automatically available.
+
+### Resolution Order
+
+1. Primary proto registry (from server reflection)
+2. On-demand reflection for unknown types
+3. Local proto directory (if configured)
+4. Error with hint about missing type
+
+### Common Deprecated Modules
 
 | Module | Package | Description |
 |--------|---------|-------------|
 | Liquidity (Gravity DEX) | `tendermint.liquidity.v1beta1` | AMM/DEX module removed from Cosmos Hub |
-
-Supported message types for the liquidity module:
-- `MsgCreatePool` / `MsgCreatePoolResponse`
-- `MsgDepositWithinBatch` / `MsgDepositWithinBatchResponse`
-- `MsgWithdrawWithinBatch` / `MsgWithdrawWithinBatchResponse`
-- `MsgSwapWithinBatch` / `MsgSwapWithinBatchResponse`
+| LSM Staking Extensions | `cosmos.staking.v1beta1` | MsgTokenizeShares, MsgRedeemTokensForShares |
 
 ### Advanced: Custom Fallback Registry
+
+For programmatic proto registration:
 
 ```go
 // Create a custom fallback registry
 fb := libyaci.NewFallbackRegistry()
 
-// Register your own deprecated types
-fb.RegisterFileDescriptor(myDeprecatedProto)
+// Register your own types programmatically
+fb.RegisterFileDescriptor(myProtoDescriptor)
 
 // Use the custom registry
 client, err := libyaci.Dial(ctx, endpoint,
@@ -114,24 +132,11 @@ client, err := libyaci.Dial(ctx, endpoint,
 )
 ```
 
-### Shared Global Fallback
-
-Multiple clients can share the same fallback registry:
-
-```go
-// Register once at startup
-libyaci.GlobalFallback().RegisterDeprecatedCosmosModules()
-
-// All clients using WithGlobalFallback() share the same descriptors
-client1, _ := libyaci.Dial(ctx, endpoint1, libyaci.WithGlobalFallback())
-client2, _ := libyaci.Dial(ctx, endpoint2, libyaci.WithGlobalFallback())
-```
-
 ### Fallback Options
 
 | Option | Description |
 |--------|-------------|
-| `WithDeprecatedCosmosModules()` | Register deprecated Cosmos SDK modules (liquidity, etc.) to the global fallback |
+| `WithProtoDir(path)` | Load local `.proto` files from directory for fallback resolution |
 | `WithGlobalFallback()` | Use the shared global fallback registry |
 | `WithFallbackRegistry(fb)` | Use a custom fallback registry |
 
