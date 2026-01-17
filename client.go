@@ -89,6 +89,12 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		}
 	}
 
+	// Setup local proto directory if configured
+	if o.protoDir != "" && fallback != nil {
+		protoDir := NewProtoDir(o.protoDir)
+		fallback.SetProtoDir(protoDir)
+	}
+
 	resolver := newResolver(clientCtx, files, conn, o.maxRetries, fallback)
 
 	return &Client{
@@ -404,21 +410,51 @@ func (r *Resolver) FindMessageByName(name protoreflect.FullName) (protoreflect.M
 }
 
 // tryFallback attempts to find the message in the fallback registry.
-// Returns the message type if found, otherwise returns the original error.
+// Returns the message type if found, otherwise returns an error with helpful hints.
 func (r *Resolver) tryFallback(name protoreflect.FullName, originalErr error) (protoreflect.MessageType, error) {
 	if r.fallback == nil {
 		atomic.AddUint64(&r.fallbackMisses, 1)
-		return nil, originalErr
+		return nil, &TypeNotFoundError{
+			TypeName:    string(name),
+			OriginalErr: originalErr,
+			Hint:        "no fallback registry configured; use WithProtoDir() to provide local proto definitions",
+		}
 	}
 
 	desc, err := r.fallback.FindDescriptorByName(name)
 	if err != nil || desc == nil {
 		atomic.AddUint64(&r.fallbackMisses, 1)
-		return nil, originalErr
+		return nil, &TypeNotFoundError{
+			TypeName:    string(name),
+			OriginalErr: originalErr,
+			Hint:        suggestProtoFile(string(name)),
+		}
 	}
 
 	atomic.AddUint64(&r.fallbackHits, 1)
 	return createMessageType(desc, name)
+}
+
+// TypeNotFoundError provides detailed information when a type cannot be resolved
+// via server reflection or fallback registries.
+type TypeNotFoundError struct {
+	TypeName    string // full proto type name that was not found
+	OriginalErr error  // underlying error from the resolution attempt
+	Hint        string // suggestion for how to fix the issue
+}
+
+// Error implements the error interface with a helpful message.
+func (e *TypeNotFoundError) Error() string {
+	msg := fmt.Sprintf("type %s not found", e.TypeName)
+	if e.Hint != "" {
+		msg += ": " + e.Hint
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error for use with errors.Is/errors.As.
+func (e *TypeNotFoundError) Unwrap() error {
+	return e.OriginalErr
 }
 
 // Stats returns cache hit/miss statistics for the resolver.

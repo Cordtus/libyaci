@@ -20,6 +20,7 @@ type options struct {
 	fallback           *FallbackRegistry
 	useGlobalFallback  bool
 	registerDeprecated bool
+	protoDir           string // path to local proto files for fallback
 }
 
 func defaultOptions() *options {
@@ -94,6 +95,41 @@ func WithDeprecatedCosmosModules() Option {
 	return func(o *options) {
 		o.registerDeprecated = true
 		// If no fallback is configured, use global fallback
+		if o.fallback == nil && !o.useGlobalFallback {
+			o.useGlobalFallback = true
+		}
+	}
+}
+
+// WithProtoDir configures a directory containing .proto files to use as
+// fallback when server reflection fails to resolve a type. Proto files
+// are compiled and registered, providing definitions for deprecated types.
+//
+// The directory should contain .proto files with proper package declarations.
+// Imports are resolved relative to the directory root, and standard protobuf
+// imports (google/protobuf/*) are automatically available.
+//
+// Proto files are loaded lazily on first type resolution failure.
+//
+// Example:
+//
+//	client, err := libyaci.Dial(ctx, addr,
+//	    libyaci.WithProtoDir("/path/to/protos"),
+//	)
+//
+// When a type like "tendermint.liquidity.v1beta1.MsgSwapWithinBatch" cannot
+// be resolved via server reflection, the client will look for it in the
+// local proto files.
+//
+// Directory structure should mirror the proto package path:
+//
+//	protos/
+//	  tendermint/liquidity/v1beta1/tx.proto
+//	  cosmos/base/v1beta1/coin.proto
+func WithProtoDir(path string) Option {
+	return func(o *options) {
+		o.protoDir = path
+		// Enable global fallback if not already configured
 		if o.fallback == nil && !o.useGlobalFallback {
 			o.useGlobalFallback = true
 		}

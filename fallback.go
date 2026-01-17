@@ -1,6 +1,7 @@
 package libyaci
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -13,8 +14,9 @@ import (
 // FallbackRegistry holds pre-compiled proto descriptors for types that may not
 // be available via server reflection (e.g., deprecated modules).
 type FallbackRegistry struct {
-	files *protoregistry.Files
-	mu    sync.RWMutex
+	files    *protoregistry.Files
+	protoDir *ProtoDir // optional local proto directory
+	mu       sync.RWMutex
 }
 
 // globalFallback is the default fallback registry used when no custom one is provided.
@@ -70,10 +72,41 @@ func (r *FallbackRegistry) RegisterFileDescriptorSet(fds *descriptorpb.FileDescr
 }
 
 // FindDescriptorByName looks up a descriptor by its full name.
+// First checks the in-memory registry, then the local proto directory if configured.
 func (r *FallbackRegistry) FindDescriptorByName(name protoreflect.FullName) (protoreflect.Descriptor, error) {
 	r.mu.RLock()
+
+	// First check in-memory registry
+	desc, err := r.files.FindDescriptorByName(name)
+	if err == nil {
+		r.mu.RUnlock()
+		return desc, nil
+	}
+
+	// Check proto directory (lazy load if needed)
+	protoDir := r.protoDir
+	r.mu.RUnlock()
+
+	if protoDir != nil {
+		return protoDir.FindDescriptorByName(context.Background(), name)
+	}
+
+	return nil, err
+}
+
+// SetProtoDir configures a local proto directory for fallback resolution.
+// The directory will be loaded lazily when first needed.
+func (r *FallbackRegistry) SetProtoDir(dir *ProtoDir) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.protoDir = dir
+}
+
+// ProtoDir returns the configured proto directory, or nil if none.
+func (r *FallbackRegistry) ProtoDir() *ProtoDir {
+	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.files.FindDescriptorByName(name)
+	return r.protoDir
 }
 
 // Files returns the underlying file registry.
