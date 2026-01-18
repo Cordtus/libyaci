@@ -180,11 +180,19 @@ func (c *Client) invokeOnce(fullMethodPath string, methodDesc protoreflect.Metho
 		// Check if this is a UTF-8 error that we can recover from
 		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
 			// Create a temporary patched resolver (does not modify the original)
-			if patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName); patchErr == nil {
-				// Retry marshal with the temporary patched resolver
-				patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
-				return patchedMo.Marshal(outputMsg)
+			patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName)
+			if patchErr != nil {
+				// Patching failed - return original error with context
+				return nil, fmt.Errorf("%w (UTF-8 recovery failed: %v)", err, patchErr)
 			}
+			// Retry marshal with the temporary patched resolver
+			patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
+			patchedResult, patchedMarshalErr := patchedMo.Marshal(outputMsg)
+			if patchedMarshalErr != nil {
+				// Patched marshal also failed
+				return nil, fmt.Errorf("%w (patched marshal also failed: %v)", err, patchedMarshalErr)
+			}
+			return patchedResult, nil
 		}
 		return nil, err
 	}

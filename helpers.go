@@ -141,11 +141,17 @@ func (c *Client) DecodeTxBytes(rawBytes []byte) ([]byte, error) {
 		// Check if this is a UTF-8 error that we can recover from
 		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
 			// Create a temporary patched resolver (does not modify the original)
-			if patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName); patchErr == nil {
-				// Retry marshal with the temporary patched resolver
-				patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
-				return patchedMo.Marshal(msg)
+			patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName)
+			if patchErr != nil {
+				return nil, fmt.Errorf("marshal to json: %w (UTF-8 recovery failed: %v)", err, patchErr)
 			}
+			// Retry marshal with the temporary patched resolver
+			patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
+			patchedResult, patchedMarshalErr := patchedMo.Marshal(msg)
+			if patchedMarshalErr != nil {
+				return nil, fmt.Errorf("marshal to json: %w (patched marshal also failed: %v)", err, patchedMarshalErr)
+			}
+			return patchedResult, nil
 		}
 		return nil, fmt.Errorf("marshal to json: %w", err)
 	}
