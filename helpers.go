@@ -120,6 +120,7 @@ func (c *Client) ExtractField(method string, request []byte, fieldName string) (
 
 // DecodeTxBytes decodes raw protobuf transaction bytes to JSON.
 // The raw bytes should be the protobuf-encoded cosmos.tx.v1beta1.Tx message.
+// Handles UTF-8 errors by patching string fields that contain binary data.
 func (c *Client) DecodeTxBytes(rawBytes []byte) ([]byte, error) {
 	// Find the Tx message type
 	txType, err := c.resolver.FindMessageByName("cosmos.tx.v1beta1.Tx")
@@ -137,6 +138,15 @@ func (c *Client) DecodeTxBytes(rawBytes []byte) ([]byte, error) {
 	mo := protojson.MarshalOptions{Resolver: c.resolver}
 	jsonBytes, err := mo.Marshal(msg)
 	if err != nil {
+		// Check if this is a UTF-8 error that we can recover from
+		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
+			// Create a temporary patched resolver (does not modify the original)
+			if patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName); patchErr == nil {
+				// Retry marshal with the temporary patched resolver
+				patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
+				return patchedMo.Marshal(msg)
+			}
+		}
 		return nil, fmt.Errorf("marshal to json: %w", err)
 	}
 
