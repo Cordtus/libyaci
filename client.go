@@ -662,14 +662,19 @@ func (r *Resolver) CreatePatchedResolver(messageType, fieldName string) (*Resolv
 		return nil, fmt.Errorf("failed to copy file descriptors: %w", copyErr)
 	}
 
-	// Register the patched file
+	// Register the patched file and any new dependencies
 	for _, fdProto := range fdProtos {
+		protoPath := fdProto.GetName()
+		// Skip if already registered (dependency files copied earlier)
+		if _, err := newFiles.FindFileByPath(protoPath); err == nil {
+			continue
+		}
 		fd, err := protodesc.NewFile(fdProto, newFiles)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create patched file descriptor for %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to create patched file descriptor for %s: %w", protoPath, err)
 		}
 		if err := newFiles.RegisterFile(fd); err != nil {
-			return nil, fmt.Errorf("failed to register patched file %s: %w", filePath, err)
+			return nil, fmt.Errorf("failed to register patched file %s: %w", protoPath, err)
 		}
 	}
 
