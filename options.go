@@ -1,6 +1,8 @@
 package libyaci
 
 import (
+	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -12,14 +14,15 @@ const (
 )
 
 type options struct {
-	insecure          bool
-	maxRetries        uint
-	maxRecvMsgSize    int
-	dialTimeout       time.Duration
-	dialOpts          []grpc.DialOption
-	fallback          *FallbackRegistry
-	useGlobalFallback bool
-	protoDir          string // path to local proto files for fallback
+	insecure               bool
+	maxRetries             uint
+	maxRecvMsgSize         int
+	dialTimeout            time.Duration
+	dialOpts               []grpc.DialOption
+	fallback               *FallbackRegistry
+	useGlobalFallback      bool
+	protoDir               string // path to local proto files for fallback
+	disableALPNEnforcement bool   // disable ALPN enforcement for servers that don't support it
 }
 
 func defaultOptions() *options {
@@ -119,4 +122,61 @@ func WithProtoDir(path string) Option {
 			o.useGlobalFallback = true
 		}
 	}
+}
+
+// alpnEnvOnce ensures ALPN enforcement is only disabled once globally
+var alpnEnvOnce sync.Once
+
+// init checks for LIBYACI_DISABLE_ALPN environment variable to allow
+// early configuration before any gRPC connections are made.
+func init() {
+	if os.Getenv("LIBYACI_DISABLE_ALPN") == "1" || os.Getenv("LIBYACI_DISABLE_ALPN") == "true" {
+		DisableALPNEnforcement()
+	}
+}
+
+// WithDisableALPNEnforcement disables ALPN (Application-Layer Protocol Negotiation)
+// enforcement for TLS connections. This is needed for some gRPC servers that don't
+// properly support ALPN negotiation.
+//
+// Starting with grpc-go v1.67, ALPN is enforced by default. Some servers,
+// particularly older or misconfigured ones, fail the TLS handshake because
+// they don't include the required ALPN property in their response.
+//
+// Use this option if you encounter errors like:
+//
+//	"transport: authentication handshake failed: credentials: cannot check peer:
+//	missing selected ALPN property"
+//
+// IMPORTANT: Due to grpc-go's initialization order, this option may not work
+// if grpc-go has already cached the environment variable. For reliable ALPN
+// bypass, use one of these approaches instead:
+//
+// 1. Import the alpnfix package before any grpc imports:
+//
+//	import (
+//	    _ "github.com/Cordtus/libyaci/alpnfix" // Must be first!
+//	    "github.com/Cordtus/libyaci"
+//	)
+//
+// 2. Set the environment variable before running:
+//
+//	GRPC_ENFORCE_ALPN_ENABLED=false ./your-program
+//
+// This option is kept for cases where the above approaches are impractical.
+func WithDisableALPNEnforcement() Option {
+	return func(o *options) {
+		o.disableALPNEnforcement = true
+	}
+}
+
+// DisableALPNEnforcement globally disables ALPN enforcement for all gRPC
+// connections in the process. This is useful when you know all your target
+// servers don't support ALPN. Call this before creating any clients.
+//
+// This function is safe to call multiple times; it only takes effect once.
+func DisableALPNEnforcement() {
+	alpnEnvOnce.Do(func() {
+		os.Setenv("GRPC_ENFORCE_ALPN_ENABLED", "false")
+	})
 }

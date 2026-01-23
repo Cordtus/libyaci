@@ -72,6 +72,25 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
 )
 ```
 
+## ALPN Enforcement (grpc-go v1.67+)
+
+Some gRPC servers don't support ALPN negotiation, causing TLS handshake failures with grpc-go v1.67+:
+
+```
+transport: authentication handshake failed: credentials: cannot check peer: missing selected ALPN property
+```
+
+**Fix:** Import the `alpnfix` package first, or set the environment variable:
+
+```go
+import (
+    _ "github.com/Cordtus/libyaci/alpnfix" // Must be first!
+    "github.com/Cordtus/libyaci"
+)
+```
+
+Or run with: `GRPC_ENFORCE_ALPN_ENABLED=false ./your-program`
+
 ## Local Proto Directory (Deprecated/Unavailable Types)
 
 Some Cosmos SDK modules have been deprecated and removed from chains, but their transaction data still exists in historical blocks. Server reflection cannot provide descriptors for these removed modules, causing decode failures.

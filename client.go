@@ -227,6 +227,11 @@ func dial(ctx context.Context, address string, o *options) (*grpc.ClientConn, er
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(o.maxRecvMsgSize)),
 	}
 
+	// Handle ALPN enforcement before creating credentials
+	if o.disableALPNEnforcement {
+		DisableALPNEnforcement()
+	}
+
 	if o.insecure {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
