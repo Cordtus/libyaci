@@ -550,7 +550,7 @@ The client is safe for concurrent use from multiple goroutines. The internal typ
 ## Example CLI
 
 ```bash
-go build -o grpc-cli ./example
+go build -o grpc-cli ./examples/cli
 
 ./grpc-cli -addr localhost:9090 -insecure -list
 ./grpc-cli -addr localhost:9090 -insecure -method "cosmos.bank.v1beta1.Query.TotalSupply" -request "{}"

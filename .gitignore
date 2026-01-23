@@ -5,6 +5,8 @@
 *.so
 *.dylib
 grpc-cli
+examples/cli/cli
+examples/explorer/explorer
 
 # Test binary
 *.test
@@ -30,6 +32,9 @@ Thumbs.db
 # Claude Code
 .claude/
 CLAUDE.md
+
+# Serena MCP
+.serena/
 
 # Bundle files
 *.bundle
