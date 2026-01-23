@@ -217,7 +217,7 @@ func (c *Client) invokeRawOnce(fullMethodPath string, methodDesc protoreflect.Me
 	return outputMsg, nil
 }
 
-func dial(ctx context.Context, address string, o *options) (*grpc.ClientConn, error) {
+func dial(_ context.Context, address string, o *options) (*grpc.ClientConn, error) {
 	dialOpts := []grpc.DialOption{
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                60 * time.Second,

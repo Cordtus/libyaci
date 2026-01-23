@@ -74,13 +74,13 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
 
 ## ALPN Enforcement (grpc-go v1.67+)
 
-Some gRPC servers don't support ALPN negotiation, causing TLS handshake failures with grpc-go v1.67+:
+Starting with grpc-go v1.67, ALPN (Application-Layer Protocol Negotiation) is enforced by default. Many Cosmos SDK nodes—especially older or self-hosted ones—don't properly support ALPN, causing connection failures:
 
 ```
 transport: authentication handshake failed: credentials: cannot check peer: missing selected ALPN property
 ```
 
-**Fix:** Import the `alpnfix` package first, or set the environment variable:
+**Fix:** Import the `alpnfix` package before any gRPC imports:
 
 ```go
 import (
@@ -89,7 +89,9 @@ import (
 )
 ```
 
-Or run with: `GRPC_ENFORCE_ALPN_ENABLED=false ./your-program`
+Or set the environment variable: `GRPC_ENFORCE_ALPN_ENABLED=false ./your-program`
+
+> **Note:** This disables ALPN enforcement process-wide. If you need ALPN for some connections, use the environment variable approach selectively.
 
 ## Local Proto Directory (Deprecated/Unavailable Types)
 

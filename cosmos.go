@@ -57,8 +57,7 @@ const (
 	methodDelegatorValidators  = "cosmos.staking.v1beta1.Query.DelegatorValidators"
 	methodValidatorDelegations = "cosmos.staking.v1beta1.Query.ValidatorDelegations"
 	methodUnbondingDelegation  = "cosmos.staking.v1beta1.Query.UnbondingDelegation"
-	methodRedelegations        = "cosmos.staking.v1beta1.Query.Redelegations"
-	methodHistoricalInfo       = "cosmos.staking.v1beta1.Query.HistoricalInfo"
+	methodRedelegations = "cosmos.staking.v1beta1.Query.Redelegations"
 
 	// Distribution queries
 	methodCommunityPool          = "cosmos.distribution.v1beta1.Query.CommunityPool"
@@ -66,9 +65,8 @@ const (
 	methodDelegationTotalRewards = "cosmos.distribution.v1beta1.Query.DelegationTotalRewards"
 	methodDelegatorWithdrawAddr  = "cosmos.distribution.v1beta1.Query.DelegatorWithdrawAddress"
 	methodValidatorCommission    = "cosmos.distribution.v1beta1.Query.ValidatorCommission"
-	methodValidatorOutstanding   = "cosmos.distribution.v1beta1.Query.ValidatorOutstandingRewards"
-	methodValidatorSlashes       = "cosmos.distribution.v1beta1.Query.ValidatorSlashes"
-	methodDistributionParams     = "cosmos.distribution.v1beta1.Query.Params"
+	methodValidatorOutstanding = "cosmos.distribution.v1beta1.Query.ValidatorOutstandingRewards"
+	methodDistributionParams   = "cosmos.distribution.v1beta1.Query.Params"
 
 	// Gov queries (v1)
 	methodProposals   = "cosmos.gov.v1.Query.Proposals"
@@ -103,25 +101,18 @@ const (
 	methodModuleVersions = "cosmos.upgrade.v1beta1.Query.ModuleVersions"
 
 	// IBC Core - Client
-	methodClientStates    = "ibc.core.client.v1.Query.ClientStates"
-	methodClientState     = "ibc.core.client.v1.Query.ClientState"
-	methodConsensusStates = "ibc.core.client.v1.Query.ConsensusStates"
-	methodClientParams    = "ibc.core.client.v1.Query.ClientParams"
+	methodClientStates = "ibc.core.client.v1.Query.ClientStates"
+	methodClientState  = "ibc.core.client.v1.Query.ClientState"
 
 	// IBC Core - Connection
 	methodConnections       = "ibc.core.connection.v1.Query.Connections"
 	methodConnection        = "ibc.core.connection.v1.Query.Connection"
 	methodClientConnections = "ibc.core.connection.v1.Query.ClientConnections"
-	methodConnectionParams  = "ibc.core.connection.v1.Query.ConnectionParams"
 
 	// IBC Core - Channel
 	methodChannels           = "ibc.core.channel.v1.Query.Channels"
 	methodChannel            = "ibc.core.channel.v1.Query.Channel"
 	methodConnectionChannels = "ibc.core.channel.v1.Query.ConnectionChannels"
-	methodPacketCommitments  = "ibc.core.channel.v1.Query.PacketCommitments"
-	methodPacketAcks         = "ibc.core.channel.v1.Query.PacketAcknowledgements"
-	methodUnreceivedPackets  = "ibc.core.channel.v1.Query.UnreceivedPackets"
-	methodUnreceivedAcks     = "ibc.core.channel.v1.Query.UnreceivedAcks"
 
 	// IBC Applications - Transfer
 	methodDenomTrace        = "ibc.applications.transfer.v1.Query.Denom"

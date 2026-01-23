@@ -1,7 +1,7 @@
 // Example demonstrates how to use libyaci to call Cosmos SDK gRPC methods
 // without any precompiled protobuf stubs.
 //
-// Run with: go run ./example -addr localhost:9090 -insecure
+// Run with: go run ./examples/cli -addr localhost:9090 -insecure
 package main
 
 import (

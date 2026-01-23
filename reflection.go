@@ -1,5 +1,7 @@
 package libyaci
 
+//lint:file-ignore SA1019 v1alpha reflection API is deprecated but required for backwards compatibility with older gRPC servers
+
 import (
 	"context"
 	"fmt"
@@ -88,8 +90,6 @@ type reflectionRequest interface{}
 type reflectionResponse struct {
 	services        []string
 	fileDescriptors [][]byte
-	errorCode       int32
-	errorMessage    string
 }
 
 func listServices(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]string, error) {

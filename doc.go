@@ -68,6 +68,24 @@
 //	    libyaci.WithMaxRetries(5),
 //	    libyaci.WithMaxRecvMsgSize(16*1024*1024),
 //	    libyaci.WithDialTimeout(30*time.Second),
+//	    libyaci.WithProtoDir("./protos"),  // local protos for deprecated types
+//	)
+//
+// # ALPN Connection Issues
+//
+// If connections fail with "missing selected ALPN property" errors (common with
+// older Cosmos nodes), import the alpnfix subpackage before any gRPC imports:
+//
+//	import _ "github.com/Cordtus/libyaci/alpnfix"
+//
+// # Deprecated Type Resolution
+//
+// Historical blockchain data may contain message types from deprecated modules
+// that no longer exist on the server. Use WithProtoDir to provide local .proto
+// files for these types:
+//
+//	client, err := libyaci.Dial(ctx, addr,
+//	    libyaci.WithProtoDir("./protos"),  // protos/tendermint/liquidity/v1beta1/*.proto
 //	)
 //
 // # Thread Safety
