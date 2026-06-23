@@ -15,6 +15,8 @@ const (
 	methodGetSyncing            = "cosmos.base.tendermint.v1beta1.Service.GetSyncing"
 	methodGetLatestValidatorSet = "cosmos.base.tendermint.v1beta1.Service.GetLatestValidatorSet"
 	methodGetValidatorSetByH    = "cosmos.base.tendermint.v1beta1.Service.GetValidatorSetByHeight"
+	methodGetBlockResults       = "cosmos.base.tendermint.v1beta1.Service.GetBlockResults"
+	methodGetLatestBlockResults = "cosmos.base.tendermint.v1beta1.Service.GetLatestBlockResults"
 
 	// Transaction service
 	methodGetTxsEvent     = "cosmos.tx.v1beta1.Service.GetTxsEvent"
@@ -57,7 +59,7 @@ const (
 	methodDelegatorValidators  = "cosmos.staking.v1beta1.Query.DelegatorValidators"
 	methodValidatorDelegations = "cosmos.staking.v1beta1.Query.ValidatorDelegations"
 	methodUnbondingDelegation  = "cosmos.staking.v1beta1.Query.UnbondingDelegation"
-	methodRedelegations = "cosmos.staking.v1beta1.Query.Redelegations"
+	methodRedelegations        = "cosmos.staking.v1beta1.Query.Redelegations"
 
 	// Distribution queries
 	methodCommunityPool          = "cosmos.distribution.v1beta1.Query.CommunityPool"
@@ -65,8 +67,8 @@ const (
 	methodDelegationTotalRewards = "cosmos.distribution.v1beta1.Query.DelegationTotalRewards"
 	methodDelegatorWithdrawAddr  = "cosmos.distribution.v1beta1.Query.DelegatorWithdrawAddress"
 	methodValidatorCommission    = "cosmos.distribution.v1beta1.Query.ValidatorCommission"
-	methodValidatorOutstanding = "cosmos.distribution.v1beta1.Query.ValidatorOutstandingRewards"
-	methodDistributionParams   = "cosmos.distribution.v1beta1.Query.Params"
+	methodValidatorOutstanding   = "cosmos.distribution.v1beta1.Query.ValidatorOutstandingRewards"
+	methodDistributionParams     = "cosmos.distribution.v1beta1.Query.Params"
 
 	// Gov queries (v1)
 	methodProposals   = "cosmos.gov.v1.Query.Proposals"
@@ -140,6 +142,64 @@ type BlockResponse struct {
 	} `json:"blockId"`
 }
 
+// BlockResultsResponse represents the response from GetBlockResults and GetLatestBlockResults.
+// Contains finalize_block_events which include consensus-level events like slashing and jailing.
+type BlockResultsResponse struct {
+	Height               int64             `json:"height,string"`
+	TxsResults           []ExecTxResult    `json:"txsResults,omitempty"`
+	FinalizeBlockEvents  []Event           `json:"finalizeBlockEvents,omitempty"`
+	ValidatorUpdates     []ValidatorUpdate `json:"validatorUpdates,omitempty"`
+	ConsensusParamUpdate json.RawMessage   `json:"consensusParamUpdates,omitempty"`
+	AppHash              string            `json:"appHash,omitempty"`
+}
+
+// ExecTxResult represents a transaction execution result.
+type ExecTxResult struct {
+	Code      uint32  `json:"code"`
+	Data      string  `json:"data,omitempty"`
+	Log       string  `json:"log,omitempty"`
+	Info      string  `json:"info,omitempty"`
+	GasWanted int64   `json:"gasWanted,string,omitempty"`
+	GasUsed   int64   `json:"gasUsed,string,omitempty"`
+	Events    []Event `json:"events,omitempty"`
+	Codespace string  `json:"codespace,omitempty"`
+}
+
+// Event represents an ABCI event from block results.
+type Event struct {
+	Type       string           `json:"type"`
+	Attributes []EventAttribute `json:"attributes,omitempty"`
+}
+
+// EventAttribute represents a key-value attribute in an ABCI event.
+type EventAttribute struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Index bool   `json:"index,omitempty"`
+}
+
+// ValidatorUpdate represents a validator update from block results.
+type ValidatorUpdate struct {
+	PubKey json.RawMessage `json:"pubKey,omitempty"`
+	Power  int64           `json:"power,string"`
+}
+
+func (c *Client) invokeCosmosEmpty(method string) ([]byte, error) {
+	return c.invokeCosmosMap(method, nil)
+}
+
+func (c *Client) invokeCosmosMap(method string, values map[string]any) ([]byte, error) {
+	handle, err := c.Method(method)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := handle.CallMap(c.ctx, values)
+	if err != nil {
+		return nil, err
+	}
+	return resp.JSON()
+}
+
 // TxsEventResponse represents the response from GetTxsEvent.
 type TxsEventResponse struct {
 	Txs         []json.RawMessage `json:"txs"`
@@ -161,8 +221,18 @@ type NodeInfoResponse struct {
 		Moniker string `json:"moniker"`
 	} `json:"defaultNodeInfo"`
 	ApplicationVersion struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
+		Name             string `json:"name"`
+		AppName          string `json:"appName"`
+		Version          string `json:"version"`
+		GitCommit        string `json:"gitCommit"`
+		BuildTags        string `json:"buildTags"`
+		GoVersion        string `json:"goVersion"`
+		CosmosSDKVersion string `json:"cosmosSdkVersion"`
+		BuildDeps        []struct {
+			Path    string `json:"path"`
+			Version string `json:"version"`
+			Sum     string `json:"sum"`
+		} `json:"buildDeps"`
 	} `json:"applicationVersion"`
 }
 
@@ -742,9 +812,9 @@ type IBCConnectionResponse struct {
 // IBCChannelsResponse represents IBC channels response.
 type IBCChannelsResponse struct {
 	Channels []struct {
-		State          string   `json:"state"`
-		Ordering       string   `json:"ordering"`
-		Counterparty   struct {
+		State        string `json:"state"`
+		Ordering     string `json:"ordering"`
+		Counterparty struct {
 			PortID    string `json:"portId"`
 			ChannelID string `json:"channelId"`
 		} `json:"counterparty"`
@@ -763,9 +833,9 @@ type IBCChannelsResponse struct {
 // IBCChannelResponse represents a single IBC channel response.
 type IBCChannelResponse struct {
 	Channel struct {
-		State          string   `json:"state"`
-		Ordering       string   `json:"ordering"`
-		Counterparty   struct {
+		State        string `json:"state"`
+		Ordering     string `json:"ordering"`
+		Counterparty struct {
 			PortID    string `json:"portId"`
 			ChannelID string `json:"channelId"`
 		} `json:"counterparty"`
@@ -866,17 +936,104 @@ func (c *Client) GetBlockByHeight(height int64) (*BlockResponse, error) {
 	return &block, nil
 }
 
+// GetBlockResults fetches block results for a given height.
+// Block results contain finalize_block_events which include consensus-level
+// events like validator slashing, jailing, and validator set updates.
+// Requires cosmos-sdk v0.53+ with the GetBlockResults RPC enabled.
+func (c *Client) GetBlockResults(height int64) (*BlockResultsResponse, error) {
+	resp, err := c.invokeCosmosMap(methodGetBlockResults, map[string]any{"height": height})
+	if err != nil {
+		return nil, fmt.Errorf("GetBlockResults(%d): %w", height, err)
+	}
+
+	var results BlockResultsResponse
+	if err := json.Unmarshal(resp, &results); err != nil {
+		return nil, fmt.Errorf("GetBlockResults(%d): parse response: %w", height, err)
+	}
+
+	return &results, nil
+}
+
+// GetLatestBlockResults fetches block results for the latest block.
+// Block results contain finalize_block_events which include consensus-level
+// events like validator slashing, jailing, and validator set updates.
+// Requires cosmos-sdk v0.53+ with the GetBlockResults RPC enabled.
+func (c *Client) GetLatestBlockResults() (*BlockResultsResponse, error) {
+	resp, err := c.invokeCosmosEmpty(methodGetLatestBlockResults)
+	if err != nil {
+		return nil, fmt.Errorf("GetLatestBlockResults: %w", err)
+	}
+
+	var results BlockResultsResponse
+	if err := json.Unmarshal(resp, &results); err != nil {
+		return nil, fmt.Errorf("GetLatestBlockResults: parse response: %w", err)
+	}
+
+	return &results, nil
+}
+
+// SupportsBlockResults reports whether the connected server advertises the
+// block-results RPCs through reflection.
+func (c *Client) SupportsBlockResults() bool {
+	return c.SupportsMethod(methodGetBlockResults) && c.SupportsMethod(methodGetLatestBlockResults)
+}
+
+// FindSlashingEvents searches block results for slashing-related events.
+// Returns events with types: "slash", "liveness", "jail".
+func (r *BlockResultsResponse) FindSlashingEvents() []Event {
+	var slashingEvents []Event
+	slashingTypes := map[string]bool{
+		"slash":    true,
+		"liveness": true,
+		"jail":     true,
+	}
+
+	for _, event := range r.FinalizeBlockEvents {
+		if slashingTypes[event.Type] {
+			slashingEvents = append(slashingEvents, event)
+		}
+	}
+
+	return slashingEvents
+}
+
+// GetEventAttribute returns the value of an attribute by key, or empty string if not found.
+func (e *Event) GetEventAttribute(key string) string {
+	for _, attr := range e.Attributes {
+		if attr.Key == key {
+			return attr.Value
+		}
+	}
+	return ""
+}
+
 // GetTxsByHeight fetches all transactions for a given block height.
 // Returns raw JSON response for flexibility in parsing.
 func (c *Client) GetTxsByHeight(height int64) ([]byte, error) {
-	request := fmt.Sprintf(`{"query":"tx.height=%d"}`, height)
-
-	resp, err := c.Invoke(methodGetTxsEvent, []byte(request))
+	handle, err := c.Method(methodGetTxsEvent)
 	if err != nil {
 		return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
 	}
+	req := handle.NewRequest()
+	fields := req.Message().Descriptor().Fields()
+	query := fmt.Sprintf("tx.height=%d", height)
+	if fields.ByName("query") != nil {
+		if err := req.Set("query", query); err != nil {
+			return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
+		}
+	} else if fields.ByName("events") != nil {
+		if err := req.Set("events", []any{query}); err != nil {
+			return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
+		}
+	} else {
+		return nil, fmt.Errorf("GetTxsByHeight(%d): reflected request has neither query nor events field", height)
+	}
 
-	return resp, nil
+	resp, err := handle.Call(c.ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
+	}
+	return resp.JSON()
 }
 
 // GetTxsByHeightParsed fetches transactions and returns them in a structured format.

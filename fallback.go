@@ -74,6 +74,12 @@ func (r *FallbackRegistry) RegisterFileDescriptorSet(fds *descriptorpb.FileDescr
 // FindDescriptorByName looks up a descriptor by its full name.
 // First checks the in-memory registry, then the local proto directory if configured.
 func (r *FallbackRegistry) FindDescriptorByName(name protoreflect.FullName) (protoreflect.Descriptor, error) {
+	return r.FindDescriptorByNameContext(context.Background(), name)
+}
+
+// FindDescriptorByNameContext looks up a descriptor by full name using the
+// supplied context for lazy proto directory loading.
+func (r *FallbackRegistry) FindDescriptorByNameContext(ctx context.Context, name protoreflect.FullName) (protoreflect.Descriptor, error) {
 	r.mu.RLock()
 
 	// First check in-memory registry
@@ -88,7 +94,7 @@ func (r *FallbackRegistry) FindDescriptorByName(name protoreflect.FullName) (pro
 	r.mu.RUnlock()
 
 	if protoDir != nil {
-		return protoDir.FindDescriptorByName(context.Background(), name)
+		return protoDir.FindDescriptorByName(ctx, name)
 	}
 
 	return nil, err

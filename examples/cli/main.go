@@ -43,13 +43,12 @@ func main() {
 
 	// List services mode
 	if *listSvcs {
-		services := client.ListServices()
+		services := client.Catalog().Services()
 		fmt.Println("Available services:")
 		for _, svc := range services {
-			fmt.Printf("  %s\n", svc)
-			methods, _ := client.ListMethods(svc)
-			for _, m := range methods {
-				fmt.Printf("    - %s\n", m)
+			fmt.Printf("  %s\n", svc.Name)
+			for _, m := range svc.Methods {
+				fmt.Printf("    - %s (%s -> %s)\n", m.Name, m.Input, m.Output)
 			}
 		}
 		return
@@ -64,22 +63,33 @@ func main() {
 	// Call the specified method
 	fmt.Fprintf(os.Stderr, "Calling %s...\n", *method)
 
-	input, output, err := client.DescribeMethod(*method)
+	handle, err := client.Method(*method)
 	if err != nil {
 		log.Fatalf("Method not found: %v", err)
 	}
-	fmt.Fprintf(os.Stderr, "  Input:  %s\n", input)
-	fmt.Fprintf(os.Stderr, "  Output: %s\n\n", output)
+	info := handle.Info()
+	fmt.Fprintf(os.Stderr, "  Input:  %s\n", info.Input)
+	fmt.Fprintf(os.Stderr, "  Output: %s\n\n", info.Output)
 
-	resp, err := client.Invoke(*method, []byte(*request))
+	req := handle.NewRequest()
+	if *request != "" {
+		if err := req.LoadJSON([]byte(*request)); err != nil {
+			log.Fatalf("Invalid request: %v", err)
+		}
+	}
+	resp, err := handle.Call(ctx, req)
 	if err != nil {
 		log.Fatalf("Call failed: %v", err)
+	}
+	respJSON, err := resp.JSON()
+	if err != nil {
+		log.Fatalf("JSON marshal failed: %v", err)
 	}
 
 	// Pretty print the response
 	var prettyJSON map[string]interface{}
-	if err := json.Unmarshal(resp, &prettyJSON); err != nil {
-		fmt.Println(string(resp))
+	if err := json.Unmarshal(respJSON, &prettyJSON); err != nil {
+		fmt.Println(string(respJSON))
 	} else {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -91,7 +101,7 @@ func showExamples(client *libyaci.Client) {
 	fmt.Println("libyaci - Dynamic gRPC Client")
 	fmt.Println("=============================")
 	fmt.Println()
-	fmt.Println("This client uses gRPC server reflection to call any method without")
+	fmt.Println("This client uses gRPC server reflection to call advertised methods without")
 	fmt.Println("requiring precompiled protobuf stubs.")
 	fmt.Println()
 	fmt.Println("Examples:")

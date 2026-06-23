@@ -7,6 +7,8 @@
 grpc-cli
 examples/cli/cli
 examples/explorer/explorer
+examples/explorer/demo
+examples/validator-monitor/validator-monitor
 
 # Test binary
 *.test

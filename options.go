@@ -23,6 +23,8 @@ type options struct {
 	useGlobalFallback      bool
 	protoDir               string // path to local proto files for fallback
 	disableALPNEnforcement bool   // disable ALPN enforcement for servers that don't support it
+	sdkVersion             string // optional configured Cosmos SDK version for diagnostics
+	minSDKVersion          string // optional configured minimum supported Cosmos SDK version
 }
 
 func defaultOptions() *options {
@@ -117,10 +119,24 @@ func WithGlobalFallback() Option {
 func WithProtoDir(path string) Option {
 	return func(o *options) {
 		o.protoDir = path
-		// Enable global fallback if not already configured
-		if o.fallback == nil && !o.useGlobalFallback {
-			o.useGlobalFallback = true
-		}
+	}
+}
+
+// WithSDKVersion records the target chain's Cosmos SDK version for diagnostics.
+// Reflected service and method descriptors remain the source of truth for
+// method availability.
+func WithSDKVersion(version string) Option {
+	return func(o *options) {
+		o.sdkVersion = version
+	}
+}
+
+// WithMinSDKVersion records the minimum Cosmos SDK version expected by the
+// caller. This is diagnostic metadata; reflection still decides what methods
+// can be called.
+func WithMinSDKVersion(version string) Option {
+	return func(o *options) {
+		o.minSDKVersion = version
 	}
 }
 

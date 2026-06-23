@@ -237,7 +237,7 @@ func TestWithProtoDir_Option(t *testing.T) {
 	if o.protoDir != "/path/to/protos" {
 		t.Error("WithProtoDir should set protoDir")
 	}
-	if !o.useGlobalFallback {
-		t.Error("WithProtoDir should enable useGlobalFallback when no fallback is configured")
+	if o.useGlobalFallback {
+		t.Error("WithProtoDir should not enable global fallback implicitly")
 	}
 }

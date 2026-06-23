@@ -1,16 +1,18 @@
 # libyaci
 
-A dynamic gRPC client for Go that uses server reflection to invoke methods without precompiled protobuf stubs. Designed for Cosmos SDK blockchains but works with any reflection-enabled gRPC server.
+A dynamic gRPC client for Go that uses server reflection to discover services, build protobuf messages, and invoke methods without generated stubs. Designed for Cosmos SDK blockchains, but usable with any reflection-enabled gRPC server.
 
 ## Features
 
-- Dynamic gRPC invocation without compiled protobuf stubs
-- Server reflection for automatic service discovery
-- On-demand type resolution for `Any` fields
-- Local proto directory fallback for deprecated/unavailable types
+- Capability catalog from advertised gRPC reflection services
+- Descriptor-backed request and response builders without generated stubs
+- Dynamic JSON or raw protobuf invocation
+- SDK-version metadata for diagnostics; reflected capabilities decide availability
+- On-demand type resolution for `Any` fields with descriptor caching
+- Local proto directory fallback for historical/deprecated types
 - Thread-safe concurrent access
 - Raw protobuf transaction decoding (Cosmos SDK)
-- Comprehensive query methods for all Cosmos SDK modules
+- Cosmos convenience helpers layered on top of reflected capabilities
 
 ## Installation
 
@@ -46,16 +48,35 @@ func main() {
     }
     defer client.Close()
 
-    // Call any method with JSON request/response
-    resp, err := client.Invoke(
-        "cosmos.bank.v1beta1.Query.TotalSupply",
-        []byte(`{}`),
-    )
+    methodName := "cosmos.bank.v1beta1.Query.Balance"
+    if !client.SupportsMethod(methodName) {
+        log.Fatalf("%s is not advertised by this chain", methodName)
+    }
+
+    method, err := client.Method(methodName)
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Println(string(resp))
+    req, err := method.RequestFromMap(map[string]any{
+        "address": "cosmos1...",
+        "denom":   "uatom",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    resp, err := method.Call(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    jsonBytes, err := resp.JSON()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(string(jsonBytes))
 }
 ```
 
@@ -67,10 +88,13 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithMaxRetries(5),                      // Retry count (default: 3)
     libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 4MB)
     libyaci.WithDialTimeout(30 * time.Second),      // Connection timeout (default: no timeout)
+    libyaci.WithSDKVersion("0.47.0"),               // Diagnostic metadata only
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
-    libyaci.WithProtoDir("./protos"),               // Local proto files for deprecated types
+    libyaci.WithProtoDir("./protos"),               // Secondary fallback for deprecated types
 )
 ```
+
+Reflection decides what can be called. SDK version options annotate diagnostics and unsupported-method errors, but a method is supported only when its service is advertised by reflection and the method exists in that reflected service descriptor.
 
 ## ALPN Enforcement (grpc-go v1.67+)
 
@@ -97,7 +121,7 @@ Or set the environment variable: `GRPC_ENFORCE_ALPN_ENABLED=false ./your-program
 
 Some Cosmos SDK modules have been deprecated and removed from chains, but their transaction data still exists in historical blocks. Server reflection cannot provide descriptors for these removed modules, causing decode failures.
 
-The `WithProtoDir()` option allows you to provide local `.proto` files that will be used as a fallback when server reflection fails to resolve a type.
+The `WithProtoDir()` option allows you to provide local `.proto` files that will be used as a per-client fallback when server reflection fails to resolve a historical or deprecated type. Current chain query and message support should come from reflected descriptors first.
 
 ### Basic Usage
 
@@ -157,27 +181,41 @@ client, err := libyaci.Dial(ctx, endpoint,
 
 | Option | Description |
 |--------|-------------|
-| `WithProtoDir(path)` | Load local `.proto` files from directory for fallback resolution |
-| `WithGlobalFallback()` | Use the shared global fallback registry |
+| `WithProtoDir(path)` | Load local `.proto` files into this client for fallback resolution |
+| `WithGlobalFallback()` | Explicitly use the shared global fallback registry |
 | `WithFallbackRegistry(fb)` | Use a custom fallback registry |
 
 ## Core Methods
 
-### Generic Invocation
+### Reflection Catalog
 
 | Method | Description |
 |--------|-------------|
-| `Invoke(method string, request []byte) ([]byte, error)` | Call any gRPC method with JSON request/response |
-| `InvokeRaw(method string, request []byte) (*dynamicpb.Message, error)` | Call method and return raw protobuf message |
-| `InvokeWithRetry(method string, request []byte, maxRetries uint) ([]byte, error)` | Call with custom retry count |
+| `Catalog() *Catalog` | Get reflected services, methods, and message types |
+| `SupportsService(service string) bool` | Check whether a service was advertised by reflection |
+| `SupportsMethod(method string) bool` | Check whether a method is callable according to reflection |
+| `ChainInfo() ChainInfo` | Get configured or detected chain metadata |
+| `DetectChainInfo(ctx)` | Query `GetNodeInfo` when available and record chain metadata |
 
-### Service Discovery
+### Dynamic Calls
 
 | Method | Description |
 |--------|-------------|
-| `ListServices() []string` | List all available gRPC services |
-| `ListMethods(service string) ([]string, error)` | List methods for a service |
-| `DescribeMethod(method string) (input, output string, error)` | Get method input/output types |
+| `Method(name string) (*Method, error)` | Get a reusable reflected method handle |
+| `Method.NewRequest()` | Create a descriptor-backed request message |
+| `Request.Set(field, value)` | Set a request field by proto or JSON name |
+| `Method.Call(ctx, request)` | Invoke a method with a dynamic request |
+| `Method.EachPage(ctx, values, fn)` | Iterate standard Cosmos SDK paginated query responses |
+| `Response.JSON()` | Marshal a dynamic response to protobuf JSON |
+| `NewMessage(fullName string)` | Create an arbitrary reflected protobuf message |
+
+Legacy JSON helpers remain available:
+
+| Method | Description |
+|--------|-------------|
+| `Invoke(method string, request []byte) ([]byte, error)` | Call any method with protobuf JSON bytes |
+| `InvokeRaw(method string, request []byte) (*dynamicpb.Message, error)` | Call method and return a raw dynamic message |
+| `InvokeContext(ctx, method, request)` | Call with a caller-controlled context |
 
 ### Utilities
 
@@ -191,9 +229,9 @@ client, err := libyaci.Dial(ctx, endpoint,
 
 ---
 
-## Cosmos SDK Methods Index
+## Cosmos SDK Convenience Helpers
 
-Complete reference of all Cosmos SDK convenience methods organized by module.
+These helpers wrap common Cosmos SDK query methods when they are advertised by reflection. Use `Catalog()` and `SupportsMethod()` for the complete chain-specific capability set, including custom modules.
 
 ### Tendermint/CometBFT Service
 
@@ -208,6 +246,9 @@ Complete reference of all Cosmos SDK convenience methods organized by module.
 | `GetSyncing() (bool, error)` | Check if node is syncing | `cosmos.base.tendermint.v1beta1.Service.GetSyncing` |
 | `GetLatestValidatorSet() (*ValidatorSetResponse, error)` | Get latest validator set | `cosmos.base.tendermint.v1beta1.Service.GetLatestValidatorSet` |
 | `GetValidatorSetByHeight(height int64) (*ValidatorSetResponse, error)` | Get validator set at height | `cosmos.base.tendermint.v1beta1.Service.GetValidatorSetByHeight` |
+| `SupportsBlockResults() bool` | Check whether block-results RPCs are advertised | - |
+| `GetBlockResults(height int64) (*BlockResultsResponse, error)` | Get block results when advertised | `cosmos.base.tendermint.v1beta1.Service.GetBlockResults` |
+| `GetLatestBlockResults() (*BlockResultsResponse, error)` | Get latest block results when advertised | `cosmos.base.tendermint.v1beta1.Service.GetLatestBlockResults` |
 
 ### Transaction Service
 
@@ -380,6 +421,8 @@ cosmos.base.tendermint.v1beta1.Service.GetNodeInfo
 cosmos.base.tendermint.v1beta1.Service.GetSyncing
 cosmos.base.tendermint.v1beta1.Service.GetLatestValidatorSet
 cosmos.base.tendermint.v1beta1.Service.GetValidatorSetByHeight
+cosmos.base.tendermint.v1beta1.Service.GetBlockResults
+cosmos.base.tendermint.v1beta1.Service.GetLatestBlockResults
 ```
 
 ### Transaction Service

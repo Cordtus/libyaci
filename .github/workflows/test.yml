@@ -41,6 +41,10 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build explorer example
+        run: go build -mod=readonly .
+        working-directory: examples/explorer
+
       - name: Run tests
         run: go test -race -coverprofile=coverage.out ./...
 

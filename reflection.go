@@ -27,6 +27,17 @@ const (
 	reflectionV1Alpha
 )
 
+func reflectionVersionName(v reflectionVersion) string {
+	switch v {
+	case reflectionV1:
+		return "grpc.reflection.v1"
+	case reflectionV1Alpha:
+		return "grpc.reflection.v1alpha"
+	default:
+		return "unknown"
+	}
+}
+
 // connReflectionVersion caches which reflection version each connection supports.
 var (
 	connVersions   = make(map[*grpc.ClientConn]reflectionVersion)
@@ -47,18 +58,29 @@ func setConnVersion(conn *grpc.ClientConn, v reflectionVersion) {
 	connVersions[conn] = v
 }
 
+func clearConnVersion(conn *grpc.ClientConn) {
+	connVersionsMu.Lock()
+	defer connVersionsMu.Unlock()
+	delete(connVersions, conn)
+}
+
 // fetchAllDescriptors retrieves all file descriptors from the server via reflection.
 func fetchAllDescriptors(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, error) {
+	descriptors, _, err := fetchDescriptorSnapshot(ctx, conn, maxRetries)
+	return descriptors, err
+}
+
+func fetchDescriptorSnapshot(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) ([]*descriptorpb.FileDescriptorProto, []string, error) {
 	seenFiles := make(map[string]*descriptorpb.FileDescriptorProto)
 
 	services, err := listServices(ctx, conn, maxRetries)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list services: %w", err)
+		return nil, nil, fmt.Errorf("failed to list services: %w", err)
 	}
 
 	for _, service := range services {
 		if err := fetchFileDescriptorsForSymbol(ctx, conn, service, seenFiles, maxRetries); err != nil {
-			return nil, fmt.Errorf("failed to fetch descriptors for service %s: %w", service, err)
+			return nil, nil, fmt.Errorf("failed to fetch descriptors for service %s: %w", service, err)
 		}
 	}
 
@@ -67,7 +89,7 @@ func fetchAllDescriptors(ctx context.Context, conn *grpc.ClientConn, maxRetries 
 		result = append(result, fd)
 	}
 
-	return result, nil
+	return result, services, nil
 }
 
 // listServicesRequest represents a request to list services (version-agnostic).
@@ -175,18 +197,24 @@ func fetchFileDescriptorByName(ctx context.Context, conn *grpc.ClientConn, name 
 func sendReflectionRequestWithRetry(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest, maxRetries uint) (*reflectionResponse, error) {
 	var resp *reflectionResponse
 	var err error
+	maxAttempts := maxRetries
+	if maxAttempts == 0 {
+		maxAttempts = 1
+	}
 
-	for attempt := uint(1); attempt <= maxRetries; attempt++ {
+	for attempt := uint(1); attempt <= maxAttempts; attempt++ {
 		resp, err = sendReflectionRequest(ctx, conn, req)
 		if err == nil {
 			return resp, nil
 		}
-		if attempt < maxRetries {
-			time.Sleep(time.Duration(2*attempt) * time.Second)
+		if attempt < maxAttempts {
+			if sleepErr := sleepContext(ctx, time.Duration(2*attempt)*time.Second); sleepErr != nil {
+				return nil, sleepErr
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, err)
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxAttempts, err)
 }
 
 func sendReflectionRequest(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest) (*reflectionResponse, error) {

@@ -11,54 +11,35 @@ import (
 
 // ListServices returns all services available on the connected server.
 func (c *Client) ListServices() []string {
-	var services []string
-
-	c.resolver.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		svcs := fd.Services()
-		for i := 0; i < svcs.Len(); i++ {
-			services = append(services, string(svcs.Get(i).FullName()))
-		}
-		return true
-	})
-
+	services := make([]string, 0)
+	if c.catalog == nil {
+		return services
+	}
+	for _, svc := range c.catalog.Services() {
+		services = append(services, svc.Name)
+	}
 	return services
 }
 
 // ListMethods returns all methods for a given service.
 func (c *Client) ListMethods(serviceName string) ([]string, error) {
-	var methods []string
-	var found bool
-
-	c.resolver.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		svcs := fd.Services()
-		for i := 0; i < svcs.Len(); i++ {
-			svc := svcs.Get(i)
-			if string(svc.FullName()) == serviceName {
-				found = true
-				methodList := svc.Methods()
-				for j := 0; j < methodList.Len(); j++ {
-					methods = append(methods, string(methodList.Get(j).Name()))
-				}
-				return false
-			}
-		}
-		return true
-	})
-
-	if !found {
+	if c.catalog == nil {
 		return nil, fmt.Errorf("service %s not found", serviceName)
 	}
-
+	svc, ok := c.catalog.Service(serviceName)
+	if !ok {
+		return nil, fmt.Errorf("service %s not found", serviceName)
+	}
+	methods := make([]string, 0, len(svc.Methods))
+	for _, method := range svc.Methods {
+		methods = append(methods, method.Name)
+	}
 	return methods, nil
 }
 
 // GetMethodDescriptor returns the method descriptor for a given method.
 func (c *Client) GetMethodDescriptor(method string) (protoreflect.MethodDescriptor, error) {
-	serviceName, methodName, err := parseMethodFullName(method)
-	if err != nil {
-		return nil, err
-	}
-	return c.resolver.FindMethodDescriptor(serviceName, methodName)
+	return c.methodDescriptor(method)
 }
 
 // DescribeMethod returns a human-readable description of a method's input and output types.

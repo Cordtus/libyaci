@@ -28,6 +28,7 @@ type Client struct {
 	cancel   context.CancelFunc
 	resolver *Resolver
 	opts     *options
+	catalog  *Catalog
 }
 
 // Dial creates a new reflection-based gRPC client connected to the specified address.
@@ -38,16 +39,18 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		opt(o)
 	}
 
-	// Create the client context (for ongoing operations)
-	clientCtx, cancel := context.WithCancel(ctx)
+	// Create a client lifetime context independent from the dial/init context.
+	// A caller may pass a timeout context to Dial; that deadline must not cancel
+	// all future RPCs after initialization succeeds.
+	clientCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 
 	// Create a separate context for dial/init operations with optional timeout
 	var initCtx context.Context
 	var initCancel context.CancelFunc
 	if o.dialTimeout > 0 {
-		initCtx, initCancel = context.WithTimeout(clientCtx, o.dialTimeout)
+		initCtx, initCancel = context.WithTimeout(ctx, o.dialTimeout)
 	} else {
-		initCtx, initCancel = context.WithCancel(clientCtx)
+		initCtx, initCancel = context.WithCancel(ctx)
 	}
 	defer initCancel()
 
@@ -58,7 +61,7 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 	}
 
 	// Fetch all descriptors from the server
-	descriptors, err := fetchAllDescriptors(initCtx, conn, o.maxRetries)
+	descriptors, advertisedServices, err := fetchDescriptorSnapshot(initCtx, conn, o.maxRetries)
 	if err != nil {
 		conn.Close()
 		cancel()
@@ -79,6 +82,8 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		fallback = o.fallback
 	} else if o.useGlobalFallback {
 		fallback = GlobalFallback()
+	} else if o.protoDir != "" {
+		fallback = NewFallbackRegistry()
 	}
 
 	// Setup local proto directory if configured
@@ -88,6 +93,11 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 	}
 
 	resolver := newResolver(clientCtx, files, conn, o.maxRetries, fallback)
+	catalog := newCatalog(files, advertisedServices, ChainInfo{
+		SDKVersion:        o.sdkVersion,
+		MinSDKVersion:     o.minSDKVersion,
+		ReflectionVersion: reflectionVersionName(getConnVersion(conn)),
+	})
 
 	return &Client{
 		conn:     conn,
@@ -95,6 +105,7 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		cancel:   cancel,
 		resolver: resolver,
 		opts:     o,
+		catalog:  catalog,
 	}, nil
 }
 
@@ -105,51 +116,77 @@ func (c *Client) Invoke(method string, request []byte) ([]byte, error) {
 	return c.InvokeWithRetry(method, request, c.opts.maxRetries)
 }
 
+// InvokeContext calls the specified gRPC method with a caller-controlled context.
+func (c *Client) InvokeContext(ctx context.Context, method string, request []byte) ([]byte, error) {
+	return c.InvokeWithRetryContext(ctx, method, request, c.opts.maxRetries)
+}
+
 // InvokeWithRetry calls the specified gRPC method with custom retry count.
 func (c *Client) InvokeWithRetry(method string, request []byte, maxRetries uint) ([]byte, error) {
-	serviceName, methodName, err := parseMethodFullName(method)
+	return c.InvokeWithRetryContext(c.ctx, method, request, maxRetries)
+}
+
+// InvokeWithRetryContext calls the specified gRPC method with custom retry count
+// and a caller-controlled context.
+func (c *Client) InvokeWithRetryContext(ctx context.Context, method string, request []byte, maxRetries uint) ([]byte, error) {
+	methodDesc, err := c.methodDescriptor(method)
 	if err != nil {
 		return nil, err
 	}
 
-	methodDesc, err := c.resolver.FindMethodDescriptor(serviceName, methodName)
+	requestPayload, err := c.prepareRequest(methodDesc, request)
 	if err != nil {
-		return nil, fmt.Errorf("method not found: %w", err)
+		return nil, err
 	}
 
 	fullMethodPath := buildFullMethodPath(methodDesc)
+	callCtx, cancel := c.withClientContext(ctx)
+	defer cancel()
 
 	var resp []byte
 	var lastErr error
+	maxAttempts := maxRetries
+	if maxAttempts == 0 {
+		maxAttempts = 1
+	}
 
-	for attempt := uint(1); attempt <= maxRetries; attempt++ {
-		resp, lastErr = c.invokeOnce(fullMethodPath, methodDesc, request)
+	for attempt := uint(1); attempt <= maxAttempts; attempt++ {
+		resp, lastErr = c.invokeOnce(callCtx, fullMethodPath, methodDesc, requestPayload)
 		if lastErr == nil {
 			return resp, nil
 		}
-		if attempt < maxRetries {
-			time.Sleep(time.Duration(2*attempt) * time.Second)
+		if attempt < maxAttempts {
+			if err := sleepContext(callCtx, time.Duration(2*attempt)*time.Second); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // InvokeRaw calls the method and returns the dynamic protobuf message directly.
 // This is useful when you need to access specific fields without JSON marshaling.
 func (c *Client) InvokeRaw(method string, request []byte) (*dynamicpb.Message, error) {
-	serviceName, methodName, err := parseMethodFullName(method)
+	return c.InvokeRawContext(c.ctx, method, request)
+}
+
+// InvokeRawContext calls the method and returns the dynamic protobuf message
+// directly using a caller-controlled context.
+func (c *Client) InvokeRawContext(ctx context.Context, method string, request []byte) (*dynamicpb.Message, error) {
+	methodDesc, err := c.methodDescriptor(method)
+	if err != nil {
+		return nil, err
+	}
+	requestPayload, err := c.prepareRequest(methodDesc, request)
 	if err != nil {
 		return nil, err
 	}
 
-	methodDesc, err := c.resolver.FindMethodDescriptor(serviceName, methodName)
-	if err != nil {
-		return nil, fmt.Errorf("method not found: %w", err)
-	}
-
 	fullMethodPath := buildFullMethodPath(methodDesc)
-	return c.invokeRawOnce(fullMethodPath, methodDesc, request)
+	callCtx, cancel := c.withClientContext(ctx)
+	defer cancel()
+	return c.invokeRawOnce(callCtx, fullMethodPath, methodDesc, requestPayload)
 }
 
 // Resolver returns the underlying type resolver, useful for custom protojson operations.
@@ -165,56 +202,113 @@ func (c *Client) Conn() *grpc.ClientConn {
 // Close closes the client connection.
 func (c *Client) Close() error {
 	c.cancel()
+	clearConnVersion(c.conn)
 	return c.conn.Close()
 }
 
-func (c *Client) invokeOnce(fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request []byte) ([]byte, error) {
-	outputMsg, err := c.invokeRawOnce(fullMethodPath, methodDesc, request)
+func (c *Client) invokeOnce(ctx context.Context, fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request any) ([]byte, error) {
+	outputMsg, err := c.invokeRawOnce(ctx, fullMethodPath, methodDesc, request)
 	if err != nil {
 		return nil, err
 	}
 
-	mo := protojson.MarshalOptions{Resolver: c.resolver}
-	result, err := mo.Marshal(outputMsg)
-	if err != nil {
-		// Check if this is a UTF-8 error that we can recover from
-		if msgType, fieldName, ok := parseUTF8Error(err.Error()); ok {
-			// Create a temporary patched resolver (does not modify the original)
-			patchedResolver, patchErr := c.resolver.CreatePatchedResolver(msgType, fieldName)
-			if patchErr != nil {
-				// Patching failed - return original error with context
-				return nil, fmt.Errorf("%w (UTF-8 recovery failed: %v)", err, patchErr)
-			}
-			// Retry marshal with the temporary patched resolver
-			patchedMo := protojson.MarshalOptions{Resolver: patchedResolver}
-			patchedResult, patchedMarshalErr := patchedMo.Marshal(outputMsg)
-			if patchedMarshalErr != nil {
-				// Patched marshal also failed
-				return nil, fmt.Errorf("%w (patched marshal also failed: %v)", err, patchedMarshalErr)
-			}
-			return patchedResult, nil
-		}
-		return nil, err
-	}
-	return result, nil
+	return marshalDynamicJSON(c.resolver, outputMsg)
 }
 
-func (c *Client) invokeRawOnce(fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request []byte) (*dynamicpb.Message, error) {
+func (c *Client) invokeRawOnce(ctx context.Context, fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request any) (*dynamicpb.Message, error) {
 	inputMsg := dynamicpb.NewMessage(methodDesc.Input())
 	outputMsg := dynamicpb.NewMessage(methodDesc.Output())
 
-	if len(request) > 0 {
+	switch req := request.(type) {
+	case nil:
+	case []byte:
+		if len(req) == 0 {
+			break
+		}
 		uo := protojson.UnmarshalOptions{Resolver: c.resolver}
-		if err := uo.Unmarshal(request, inputMsg); err != nil {
+		if err := uo.Unmarshal(req, inputMsg); err != nil {
 			return nil, fmt.Errorf("failed to parse request: %w", err)
 		}
+	case *Request:
+		if req == nil {
+			break
+		}
+		if req.msg.Descriptor().FullName() != methodDesc.Input().FullName() {
+			return nil, fmt.Errorf("request type %s does not match method input %s", req.msg.Descriptor().FullName(), methodDesc.Input().FullName())
+		}
+		inputMsg = req.msg
+	case *dynamicpb.Message:
+		if req == nil {
+			break
+		}
+		if req.Descriptor().FullName() != methodDesc.Input().FullName() {
+			return nil, fmt.Errorf("request type %s does not match method input %s", req.Descriptor().FullName(), methodDesc.Input().FullName())
+		}
+		inputMsg = req
+	default:
+		return nil, fmt.Errorf("unsupported request type %T", request)
 	}
 
-	if err := c.conn.Invoke(c.ctx, fullMethodPath, inputMsg, outputMsg); err != nil {
+	if err := c.conn.Invoke(ctx, fullMethodPath, inputMsg, outputMsg); err != nil {
 		return nil, err
 	}
 
 	return outputMsg, nil
+}
+
+func (c *Client) methodDescriptor(method string) (protoreflect.MethodDescriptor, error) {
+	serviceName, methodName, err := parseMethodFullName(method)
+	if err != nil {
+		if c.catalog != nil {
+			return nil, c.catalog.unsupportedMethod(method)
+		}
+		return nil, err
+	}
+
+	if c.catalog != nil && !c.catalog.HasMethod(method) {
+		return nil, c.catalog.unsupportedMethod(method)
+	}
+
+	methodDesc, err := c.resolver.FindMethodDescriptor(serviceName, methodName)
+	if err != nil {
+		return nil, fmt.Errorf("method descriptor lookup failed: %w", err)
+	}
+	return methodDesc, nil
+}
+
+func (c *Client) withClientContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil || ctx == c.ctx {
+		return c.ctx, func() {}
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	return callCtx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (c *Client) prepareRequest(methodDesc protoreflect.MethodDescriptor, request []byte) (any, error) {
+	if len(request) == 0 {
+		return nil, nil
+	}
+	inputMsg := dynamicpb.NewMessage(methodDesc.Input())
+	uo := protojson.UnmarshalOptions{Resolver: c.resolver}
+	if err := uo.Unmarshal(request, inputMsg); err != nil {
+		return nil, fmt.Errorf("failed to parse request: %w", err)
+	}
+	return inputMsg, nil
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func dial(_ context.Context, address string, o *options) (*grpc.ClientConn, error) {
@@ -426,7 +520,7 @@ func (r *Resolver) tryFallback(name protoreflect.FullName, originalErr error) (p
 		}
 	}
 
-	desc, err := r.fallback.FindDescriptorByName(name)
+	desc, err := r.fallback.FindDescriptorByNameContext(r.ctx, name)
 	if err != nil || desc == nil {
 		atomic.AddUint64(&r.fallbackMisses, 1)
 		return nil, &TypeNotFoundError{
@@ -522,6 +616,8 @@ func (r *Resolver) Files() *protoregistry.Files {
 // processFileDescriptorsLocked processes file descriptors while holding the lock
 func (r *Resolver) processFileDescriptorsLocked(fdProtos []*descriptorpb.FileDescriptorProto) error {
 	for _, fdProto := range fdProtos {
+		applyDescriptorPatches(fdProto)
+
 		name := fdProto.GetName()
 		if _, err := r.files.FindFileByPath(name); err == nil {
 			continue // Already registered

@@ -7,7 +7,8 @@
 //   - Writing separate client code for each chain's unique features
 //   - Recompiling whenever a chain updates its protos
 //
-// With libyaci, we connect to ANY Cosmos chain and query ANY module - zero dependencies.
+// With libyaci, we connect to any reflection-enabled Cosmos chain and query
+// advertised modules without generated chain-specific dependencies.
 //
 // Usage:
 //

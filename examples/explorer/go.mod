@@ -2,12 +2,14 @@ module github.com/Cordtus/libyaci/demo
 
 go 1.24.0
 
-replace github.com/Cordtus/libyaci => ../
+replace github.com/Cordtus/libyaci => ../..
 
 require github.com/Cordtus/libyaci v0.0.0-00010101000000-000000000000
 
 require (
+	github.com/bufbuild/protocompile v0.14.1 // indirect
 	golang.org/x/net v0.46.1-0.20251013234738-63d1a5100f82 // indirect
+	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 // indirect
