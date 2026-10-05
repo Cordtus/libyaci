@@ -129,6 +129,8 @@ func (c *Catalog) setChainInfo(info ChainInfo) {
 
 // Services returns all reflected services sorted by name.
 func (c *Catalog) Services() []ServiceInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	services := make([]ServiceInfo, 0, len(c.services))
 	for _, svc := range c.services {
 		svc.Methods = append([]MethodInfo(nil), svc.Methods...)
@@ -142,6 +144,8 @@ func (c *Catalog) Services() []ServiceInfo {
 
 // Methods returns all reflected methods sorted by full name.
 func (c *Catalog) Methods() []MethodInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	methods := make([]MethodInfo, 0, len(c.methods))
 	for _, method := range c.methods {
 		methods = append(methods, method)
@@ -154,6 +158,8 @@ func (c *Catalog) Methods() []MethodInfo {
 
 // Messages returns all reflected message types sorted by full name.
 func (c *Catalog) Messages() []MessageInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	messages := make([]MessageInfo, 0, len(c.messages))
 	for _, msg := range c.messages {
 		messages = append(messages, msg)
@@ -191,24 +197,32 @@ func (c *Catalog) MessageTypesByPackage(pkg string) []MessageInfo {
 
 // HasService reports whether the connected server exposes a service.
 func (c *Catalog) HasService(service string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	_, ok := c.services[service]
 	return ok
 }
 
 // HasMethod reports whether the connected server exposes a method.
 func (c *Catalog) HasMethod(method string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	_, ok := c.methods[method]
 	return ok
 }
 
 // Method returns metadata for a reflected method.
 func (c *Catalog) Method(method string) (MethodInfo, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	info, ok := c.methods[method]
 	return info, ok
 }
 
 // Service returns metadata for a reflected service.
 func (c *Catalog) Service(service string) (ServiceInfo, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	info, ok := c.services[service]
 	if !ok {
 		return ServiceInfo{}, false
@@ -228,7 +242,10 @@ func (c *Catalog) unsupportedMethod(method string) *UnsupportedMethodError {
 		err.Reason = "method name must use package.Service.Method format"
 		return err
 	}
-	if svc, ok := c.services[service]; ok {
+	c.mu.RLock()
+	svc, ok := c.services[service]
+	c.mu.RUnlock()
+	if ok {
 		err.Reason = "service is present but the method is not advertised by reflection"
 		err.Available = make([]string, 0, len(svc.Methods))
 		for _, method := range svc.Methods {
