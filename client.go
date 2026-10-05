@@ -444,7 +444,7 @@ type Resolver struct {
 	ctx        context.Context
 	inProgress map[string]*symbolFetch // tracks in-progress fetches
 	maxRetries uint
-	mu         sync.Mutex
+	mu         sync.RWMutex
 
 	// Cache statistics (atomic for lock-free reads)
 	cacheHits      uint64
@@ -577,10 +577,14 @@ func (r *Resolver) tryFallback(name protoreflect.FullName, originalErr error) (p
 	desc, err := r.fallback.FindDescriptorByNameContext(r.ctx, name)
 	if err != nil || desc == nil {
 		atomic.AddUint64(&r.fallbackMisses, 1)
+		hint := suggestProtoFile(string(name))
+		if r.fallback.ProtoDir() == nil {
+			hint = "no local proto directory configured; use WithProtoDir() or register the type with WithFallbackRegistry()"
+		}
 		return nil, &TypeNotFoundError{
 			TypeName:    string(name),
 			OriginalErr: originalErr,
-			Hint:        suggestProtoFile(string(name)),
+			Hint:        hint,
 		}
 	}
 
@@ -762,83 +766,93 @@ func parseUTF8Error(errStr string) (string, string, bool) {
 // validation errors when string fields contain binary data.
 // The original resolver is NOT modified - the returned resolver is for one-time use.
 func (r *Resolver) CreatePatchedResolver(messageType, fieldName string) (*Resolver, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	name := protoreflect.FullName(messageType)
 
-	// Find the message descriptor
-	desc, err := r.files.FindDescriptorByName(protoreflect.FullName(messageType))
-	if err != nil {
-		return nil, fmt.Errorf("message type %s not found: %w", messageType, err)
+	// Locate the message descriptor. Prefer the primary (reflected) registry,
+	// then the fallback registry that carries deprecated/local types.
+	r.mu.RLock()
+	primaryDesc, primaryErr := r.files.FindDescriptorByName(name)
+	r.mu.RUnlock()
+
+	var msgDesc protoreflect.MessageDescriptor
+	if primaryErr == nil {
+		md, ok := primaryDesc.(protoreflect.MessageDescriptor)
+		if !ok {
+			return nil, fmt.Errorf("%s is not a message type", messageType)
+		}
+		msgDesc = md
+	} else if r.fallback != nil {
+		fbDesc, fbErr := r.fallback.FindDescriptorByName(name)
+		if fbErr != nil {
+			return nil, fmt.Errorf("message type %s not found: %w", messageType, fbErr)
+		}
+		md, ok := fbDesc.(protoreflect.MessageDescriptor)
+		if !ok {
+			return nil, fmt.Errorf("%s is not a message type", messageType)
+		}
+		msgDesc = md
+	} else {
+		return nil, fmt.Errorf("message type %s not found: %w", messageType, primaryErr)
 	}
 
-	msgDesc, ok := desc.(protoreflect.MessageDescriptor)
-	if !ok {
-		return nil, fmt.Errorf("%s is not a message type", messageType)
-	}
-
-	// Get the file descriptor that contains this message
 	fileDesc := msgDesc.ParentFile()
 	if fileDesc == nil {
 		return nil, fmt.Errorf("no parent file for message %s", messageType)
 	}
-
-	// Get the file path to fetch the raw proto
 	filePath := fileDesc.Path()
 
-	// Fetch the file descriptor proto again so we can modify it
-	fdProtos, fetchErr := fetchFileDescriptorsByName(r.ctx, r.conn, filePath, r.maxRetries)
-	if fetchErr != nil {
-		return nil, fmt.Errorf("failed to fetch descriptor for %s: %w", filePath, fetchErr)
-	}
-
-	// Find and patch the field
-	var patched bool
-	for _, fdProto := range fdProtos {
-		if fdProto.GetName() != filePath {
-			continue
-		}
-		if patchFieldInProto(fdProto, messageType, fieldName) {
-			patched = true
-			break
-		}
-	}
-
-	if !patched {
+	// Reconstruct the raw file descriptor in-memory (no server round trip) and
+	// patch the offending field.
+	fdProto := protodesc.ToFileDescriptorProto(fileDesc)
+	if !patchFieldInProto(fdProto, messageType, fieldName) {
 		return nil, fmt.Errorf("field %s.%s not found in descriptors", messageType, fieldName)
 	}
 
-	// Create a new Files registry for the patched resolver
+	// Build a fresh registry from every file we know about (primary and
+	// fallback), then register the patched file. Registration is best-effort:
+	// files with unresolved dependencies are skipped rather than aborting.
 	newFiles := &protoregistry.Files{}
-
-	// Copy all existing files except the one we're patching
-	var copyErr error
+	var pending []protoreflect.FileDescriptor
+	r.mu.RLock()
 	r.files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
 		if fd.Path() != filePath {
-			if err := newFiles.RegisterFile(fd); err != nil {
-				copyErr = err
-				return false
-			}
+			pending = append(pending, fd)
 		}
 		return true
 	})
-	if copyErr != nil {
-		return nil, fmt.Errorf("failed to copy file descriptors: %w", copyErr)
+	r.mu.RUnlock()
+	if r.fallback != nil {
+		r.fallback.Files().RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+			if fd.Path() != filePath {
+				pending = append(pending, fd)
+			}
+			return true
+		})
+		// Local proto files are compiled into the ProtoDir registry rather than
+		// the fallback registry's own files, so include them too or patched
+		// multi-file packages cannot resolve their imports.
+		if pd := r.fallback.ProtoDir(); pd != nil {
+			if err := pd.Load(r.ctx); err != nil {
+				return nil, fmt.Errorf("failed to load proto directory: %w", err)
+			}
+			if reg := pd.Registry(); reg != nil {
+				reg.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+					if fd.Path() != filePath {
+						pending = append(pending, fd)
+					}
+					return true
+				})
+			}
+		}
 	}
+	registerFilesBestEffort(newFiles, pending)
 
-	// Register the patched file and any new dependencies
-	for _, fdProto := range fdProtos {
-		protoPath := fdProto.GetName()
-		// Skip if already registered (dependency files copied earlier)
-		if _, err := newFiles.FindFileByPath(protoPath); err == nil {
-			continue
-		}
-		fd, err := protodesc.NewFile(fdProto, newFiles)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create patched file descriptor for %s: %w", protoPath, err)
-		}
-		if err := newFiles.RegisterFile(fd); err != nil {
-			return nil, fmt.Errorf("failed to register patched file %s: %w", protoPath, err)
-		}
+	patchedFD, err := protodesc.NewFile(fdProto, newFiles)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create patched file descriptor for %s: %w", filePath, err)
+	}
+	if err := newFiles.RegisterFile(patchedFD); err != nil {
+		return nil, fmt.Errorf("failed to register patched file %s: %w", filePath, err)
 	}
 
 	// Return a new resolver with the patched files (original unchanged)
@@ -850,6 +864,18 @@ func (r *Resolver) CreatePatchedResolver(messageType, fieldName string) (*Resolv
 		inProgress: make(map[string]*symbolFetch),
 		maxRetries: r.maxRetries,
 	}, nil
+}
+
+// registerFilesBestEffort registers each descriptor, skipping ones that are
+// already present. RegisterFile does not resolve imports, so a single pass is
+// sufficient; unresolved imports are reported later by protodesc.NewFile.
+func registerFilesBestEffort(dst *protoregistry.Files, fds []protoreflect.FileDescriptor) {
+	for _, fd := range fds {
+		if _, err := dst.FindFileByPath(fd.Path()); err == nil {
+			continue
+		}
+		_ = dst.RegisterFile(fd)
+	}
 }
 
 // patchFieldInProto finds and patches a field from STRING to BYTES in a file descriptor proto.
