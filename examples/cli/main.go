@@ -20,8 +20,10 @@ func main() {
 	addr := flag.String("addr", "localhost:9090", "gRPC server address")
 	insecure := flag.Bool("insecure", false, "skip TLS verification")
 	listSvcs := flag.Bool("list", false, "list all available services")
+	jsonOut := flag.Bool("json", false, "emit machine-readable JSON for -list")
 	method := flag.String("method", "", "method to call (e.g., cosmos.bank.v1beta1.Query.Balance)")
 	request := flag.String("request", "", "JSON request body")
+	protoDir := flag.String("protodir", "", "directory of .proto files used as fallback for deprecated types")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -30,6 +32,9 @@ func main() {
 	var opts []libyaci.Option
 	if *insecure {
 		opts = append(opts, libyaci.WithInsecure())
+	}
+	if *protoDir != "" {
+		opts = append(opts, libyaci.WithProtoDir(*protoDir))
 	}
 
 	// Connect and fetch all proto descriptors
@@ -44,6 +49,14 @@ func main() {
 	// List services mode
 	if *listSvcs {
 		services := client.Catalog().Services()
+		if *jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(services); err != nil {
+				log.Fatalf("Failed to encode services: %v", err)
+			}
+			return
+		}
 		fmt.Println("Available services:")
 		for _, svc := range services {
 			fmt.Printf("  %s\n", svc.Name)
