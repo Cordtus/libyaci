@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Cosmos SDK gRPC method paths
@@ -921,9 +924,16 @@ func (c *Client) GetLatestBlockHeight() (int64, error) {
 
 // GetBlockByHeight fetches block information for a given height.
 func (c *Client) GetBlockByHeight(height int64) (*BlockResponse, error) {
+	return c.getBlockByHeight(height, c.opts.maxRetries)
+}
+
+// getBlockByHeight fetches a block with an explicit retry budget. Probing
+// helpers pass 0 so that an expected "height not available" response is not
+// retried with multi-second backoff.
+func (c *Client) getBlockByHeight(height int64, maxRetries uint) (*BlockResponse, error) {
 	request := fmt.Sprintf(`{"height":"%d"}`, height)
 
-	resp, err := c.Invoke(methodGetBlockByHeight, []byte(request))
+	resp, err := c.InvokeWithRetry(methodGetBlockByHeight, []byte(request), maxRetries)
 	if err != nil {
 		return nil, fmt.Errorf("GetBlockByHeight(%d): %w", height, err)
 	}
@@ -934,6 +944,29 @@ func (c *Client) GetBlockByHeight(height int64) (*BlockResponse, error) {
 	}
 
 	return &block, nil
+}
+
+// isHeightUnavailable reports whether an error means the requested height is
+// outside the node's available (possibly pruned) range, as opposed to a
+// transient or configuration error.
+func isHeightUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch status.Code(err) {
+	case codes.NotFound, codes.InvalidArgument, codes.OutOfRange:
+		return true
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+		// Transport/server problems are never "pruned"; surface them.
+		return false
+	}
+	s := err.Error()
+	for _, hint := range []string{"lowest height", "base height", "pruned", "earliest available"} {
+		if strings.Contains(s, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetBlockResults fetches block results for a given height.
@@ -1247,15 +1280,18 @@ func (c *Client) GetEarliestBlockHeight() (int64, error) {
 		return 0, fmt.Errorf("GetEarliestBlockHeight: get latest: %w", err)
 	}
 
-	// Try block 1
-	_, err = c.GetBlockByHeight(1)
+	// Try block 1 without retries: a pruned height is an expected response, not
+	// a transient failure.
+	_, err = c.getBlockByHeight(1, 0)
 	if err == nil {
 		return 1, nil
 	}
+	if !isHeightUnavailable(err) {
+		return 0, fmt.Errorf("GetEarliestBlockHeight: probe block 1: %w", err)
+	}
 
 	// Parse error for earliest available height
-	errStr := err.Error()
-	if earliest := parseEarliestFromError(errStr); earliest > 0 {
+	if earliest := parseEarliestFromError(err.Error()); earliest > 0 {
 		return earliest, nil
 	}
 
@@ -1295,7 +1331,7 @@ func parseEarliestFromError(errStr string) int64 {
 // binarySearchEarliest performs binary search to find the earliest available block.
 func (c *Client) binarySearchEarliest(latestHeight int64) (int64, error) {
 	// Verify latest block is accessible
-	_, err := c.GetBlockByHeight(latestHeight)
+	_, err := c.getBlockByHeight(latestHeight, 0)
 	if err != nil {
 		return 0, fmt.Errorf("latest block %d not accessible: %w", latestHeight, err)
 	}
@@ -1305,12 +1341,17 @@ func (c *Client) binarySearchEarliest(latestHeight int64) (int64, error) {
 
 	for low <= high {
 		mid := (low + high) / 2
-		_, err := c.GetBlockByHeight(mid)
-		if err == nil {
+		_, err := c.getBlockByHeight(mid, 0)
+		switch {
+		case err == nil:
 			earliest = mid
 			high = mid - 1
-		} else {
+		case isHeightUnavailable(err):
 			low = mid + 1
+		default:
+			// A transient or unexpected error must not be mistaken for a
+			// pruned block, which would return a wrong earliest height.
+			return 0, fmt.Errorf("probe block %d: %w", mid, err)
 		}
 	}
 
