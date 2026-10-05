@@ -10,7 +10,7 @@ import (
 
 const (
 	defaultMaxRetries     = 3
-	defaultMaxRecvMsgSize = 4 * 1024 * 1024 // 4MB
+	defaultMaxRecvMsgSize = 16 * 1024 * 1024 // 16MB
 )
 
 type options struct {
@@ -18,6 +18,7 @@ type options struct {
 	maxRetries             uint
 	maxRecvMsgSize         int
 	dialTimeout            time.Duration
+	defaultTimeout         time.Duration // per-call timeout applied to every RPC
 	dialOpts               []grpc.DialOption
 	fallback               *FallbackRegistry
 	useGlobalFallback      bool
@@ -65,6 +66,14 @@ func WithMaxRecvMsgSize(size int) Option {
 func WithDialTimeout(timeout time.Duration) Option {
 	return func(o *options) {
 		o.dialTimeout = timeout
+	}
+}
+
+// WithDefaultTimeout sets a timeout applied to every invocation, covering the
+// call and any retries/backoff. A zero value disables it.
+func WithDefaultTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.defaultTimeout = timeout
 	}
 }
 

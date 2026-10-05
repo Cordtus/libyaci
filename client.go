@@ -145,6 +145,17 @@ func (c *Client) InvokeWithRetry(method string, request []byte, maxRetries uint)
 	return c.InvokeWithRetryContext(c.ctx, method, request, maxRetries)
 }
 
+// InvokeWithTimeout calls the method with a per-invocation timeout that also
+// bounds retries and backoff. A timeout <= 0 falls back to the default.
+func (c *Client) InvokeWithTimeout(method string, request []byte, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		return c.InvokeWithRetryContext(c.ctx, method, request, c.opts.maxRetries)
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
+	defer cancel()
+	return c.InvokeWithRetryContext(ctx, method, request, c.opts.maxRetries)
+}
+
 // InvokeWithRetryContext calls the specified gRPC method with custom retry count
 // and a caller-controlled context.
 func (c *Client) InvokeWithRetryContext(ctx context.Context, method string, request []byte, maxRetries uint) ([]byte, error) {
@@ -319,13 +330,27 @@ func (c *Client) methodDescriptor(method string) (protoreflect.MethodDescriptor,
 }
 
 func (c *Client) withClientContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx == nil || ctx == c.ctx {
-		return c.ctx, func() {}
+	if ctx == nil {
+		ctx = c.ctx
 	}
 	callCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(c.ctx, cancel)
+	var stop func() bool
+	if ctx != c.ctx {
+		stop = context.AfterFunc(c.ctx, cancel)
+	}
+	if c.opts != nil && c.opts.defaultTimeout > 0 {
+		var timeoutCancel context.CancelFunc
+		callCtx, timeoutCancel = context.WithTimeout(callCtx, c.opts.defaultTimeout)
+		baseCancel := cancel
+		cancel = func() {
+			timeoutCancel()
+			baseCancel()
+		}
+	}
 	return callCtx, func() {
-		stop()
+		if stop != nil {
+			stop()
+		}
 		cancel()
 	}
 }
