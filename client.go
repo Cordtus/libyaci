@@ -254,6 +254,10 @@ func (c *Client) invokeOnce(ctx context.Context, fullMethodPath string, methodDe
 }
 
 func (c *Client) invokeRawOnce(ctx context.Context, fullMethodPath string, methodDesc protoreflect.MethodDescriptor, request any) (*dynamicpb.Message, error) {
+	if methodDesc.IsStreamingClient() || methodDesc.IsStreamingServer() {
+		return nil, fmt.Errorf("method %s is a streaming RPC; libyaci currently supports unary methods only", methodDesc.FullName())
+	}
+
 	inputMsg := dynamicpb.NewMessage(methodDesc.Input())
 	outputMsg := dynamicpb.NewMessage(methodDesc.Output())
 
@@ -656,14 +660,92 @@ func (r *Resolver) FindMessageByURL(url string) (protoreflect.MessageType, error
 	return r.FindMessageByName(protoreflect.FullName(name))
 }
 
-// FindExtensionByName is not implemented (returns NotFound).
-func (r *Resolver) FindExtensionByName(_ protoreflect.FullName) (protoreflect.ExtensionType, error) {
-	return nil, protoregistry.NotFound
+// FindExtensionByName resolves a protobuf extension field by its full name.
+// It searches the reflected registry first, then the fallback registry.
+func (r *Resolver) FindExtensionByName(name protoreflect.FullName) (protoreflect.ExtensionType, error) {
+	var found protoreflect.ExtensionDescriptor
+	r.forEachExtension(func(xd protoreflect.ExtensionDescriptor) bool {
+		if xd.FullName() == name {
+			found = xd
+			return true
+		}
+		return false
+	})
+	if found == nil {
+		return nil, protoregistry.NotFound
+	}
+	return dynamicpb.NewExtensionType(found), nil
 }
 
-// FindExtensionByNumber is not implemented (returns NotFound).
-func (r *Resolver) FindExtensionByNumber(_ protoreflect.FullName, _ protoreflect.FieldNumber) (protoreflect.ExtensionType, error) {
-	return nil, protoregistry.NotFound
+// FindExtensionByNumber resolves an extension field by its containing message
+// and field number. It searches the reflected registry first, then the fallback
+// registry.
+func (r *Resolver) FindExtensionByNumber(containingType protoreflect.FullName, field protoreflect.FieldNumber) (protoreflect.ExtensionType, error) {
+	var found protoreflect.ExtensionDescriptor
+	r.forEachExtension(func(xd protoreflect.ExtensionDescriptor) bool {
+		if xd.ContainingMessage().FullName() == containingType && xd.Number() == field {
+			found = xd
+			return true
+		}
+		return false
+	})
+	if found == nil {
+		return nil, protoregistry.NotFound
+	}
+	return dynamicpb.NewExtensionType(found), nil
+}
+
+// forEachExtension visits every extension field declared in the primary
+// registry, then the fallback registry, stopping early when fn returns true.
+// protoregistry.Files.FindDescriptorByName does not resolve extension fields,
+// so extensions must be walked explicitly.
+// ponytail: linear scan over all files; fine for typical descriptor sets,
+// index by name/number if extension-heavy schemas become a bottleneck.
+func (r *Resolver) forEachExtension(fn func(protoreflect.ExtensionDescriptor) bool) {
+	scan := func(files *protoregistry.Files) bool {
+		done := false
+		files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+			if scanExtensionList(fd.Extensions(), fn) {
+				done = true
+				return false
+			}
+			var walk func(msgs protoreflect.MessageDescriptors) bool
+			walk = func(msgs protoreflect.MessageDescriptors) bool {
+				for i := 0; i < msgs.Len(); i++ {
+					m := msgs.Get(i)
+					if scanExtensionList(m.Extensions(), fn) {
+						return true
+					}
+					if walk(m.Messages()) {
+						return true
+					}
+				}
+				return false
+			}
+			if walk(fd.Messages()) {
+				done = true
+				return false
+			}
+			return true
+		})
+		return done
+	}
+
+	r.mu.RLock()
+	done := scan(r.files)
+	r.mu.RUnlock()
+	if !done && r.fallback != nil {
+		scan(r.fallback.Files())
+	}
+}
+
+func scanExtensionList(exts protoreflect.ExtensionDescriptors, fn func(protoreflect.ExtensionDescriptor) bool) bool {
+	for i := 0; i < exts.Len(); i++ {
+		if fn(exts.Get(i)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Files returns the underlying file registry.
