@@ -30,6 +30,15 @@ func GlobalFallback() *FallbackRegistry {
 	return globalFallback
 }
 
+// clone returns a registry that shares the same descriptor set but has its own
+// proto directory. This lets a client attach a local proto dir without mutating
+// a shared or caller-owned registry.
+func (r *FallbackRegistry) clone() *FallbackRegistry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return &FallbackRegistry{files: r.files}
+}
+
 // NewFallbackRegistry creates a new empty fallback registry.
 func NewFallbackRegistry() *FallbackRegistry {
 	return &FallbackRegistry{

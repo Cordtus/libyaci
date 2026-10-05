@@ -123,10 +123,8 @@ func listServices(ctx context.Context, conn *grpc.ClientConn, maxRetries uint) (
 }
 
 func fetchFileDescriptorsForSymbol(ctx context.Context, conn *grpc.ClientConn, symbol string, seen map[string]*descriptorpb.FileDescriptorProto, maxRetries uint) error {
-	if _, exists := seen[symbol]; exists {
-		return nil
-	}
-
+	// Note: seen is keyed by file name, not symbol, so it cannot be used to
+	// short-circuit a symbol lookup here. processDescriptors deduplicates files.
 	fdProtos, err := fetchFileDescriptorsBySymbol(ctx, conn, symbol, maxRetries)
 	if err != nil {
 		return err
@@ -403,6 +401,15 @@ func parseV1AlphaResponse(resp *reflectionv1alpha.ServerReflectionResponse) (*re
 
 // buildFileDescriptorSet builds a protoregistry.Files from the given descriptors.
 func buildFileDescriptorSet(descriptors []*descriptorpb.FileDescriptorProto) (*protoregistry.Files, error) {
+	files, _, err := buildFileDescriptorSetReport(descriptors)
+	return files, err
+}
+
+// buildFileDescriptorSetReport builds a protoregistry.Files from the given
+// descriptors and also returns the names of files that could not be registered.
+// A single malformed reflected file no longer aborts the whole build; it is
+// skipped and reported so the rest of the client remains usable.
+func buildFileDescriptorSetReport(descriptors []*descriptorpb.FileDescriptorProto) (*protoregistry.Files, []string, error) {
 	files := &protoregistry.Files{}
 
 	fdMap := make(map[string]*descriptorpb.FileDescriptorProto, len(descriptors))
@@ -412,23 +419,25 @@ func buildFileDescriptorSet(descriptors []*descriptorpb.FileDescriptorProto) (*p
 
 	sorted, err := topologicalSort(fdMap)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sort descriptors: %w", err)
+		return nil, nil, fmt.Errorf("failed to sort descriptors: %w", err)
 	}
 
+	var skipped []string
 	for _, fdProto := range sorted {
 		applyDescriptorPatches(fdProto)
 
 		fd, err := protodesc.NewFile(fdProto, files)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create file descriptor for %s: %w", fdProto.GetName(), err)
+			skipped = append(skipped, fdProto.GetName())
+			continue
 		}
 
 		if err := files.RegisterFile(fd); err != nil {
-			return nil, fmt.Errorf("failed to register %s: %w", fdProto.GetName(), err)
+			skipped = append(skipped, fdProto.GetName())
 		}
 	}
 
-	return files, nil
+	return files, skipped, nil
 }
 
 // applyDescriptorPatches applies known patches for problematic proto definitions.

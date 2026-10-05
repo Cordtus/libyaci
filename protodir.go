@@ -49,12 +49,8 @@ func (p *ProtoDir) Load(ctx context.Context) error {
 	}
 
 	// Verify directory exists
-	info, err := os.Stat(p.path)
-	if err != nil {
-		return fmt.Errorf("proto directory %s: %w", p.path, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("proto path %s is not a directory", p.path)
+	if err := validateProtoDir(p.path); err != nil {
+		return err
 	}
 
 	// Find all .proto files
@@ -137,6 +133,19 @@ func (p *ProtoDir) IsLoaded() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.loaded
+}
+
+// validateProtoDir verifies that path exists and is a directory. It does not
+// compile the protos; compilation stays lazy.
+func validateProtoDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("proto directory %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("proto path %s is not a directory", path)
+	}
+	return nil
 }
 
 // findProtoFiles recursively finds all .proto files in a directory.

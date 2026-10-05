@@ -31,6 +31,7 @@ type Client struct {
 	resolver *Resolver
 	opts     *options
 	catalog  *Catalog
+	skipped  []string // reflected files that could not be registered
 }
 
 // Dial creates a new reflection-based gRPC client connected to the specified address.
@@ -45,6 +46,15 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 	// A caller may pass a timeout context to Dial; that deadline must not cancel
 	// all future RPCs after initialization succeeds.
 	clientCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+
+	// Fail fast on a misconfigured proto directory instead of surfacing the
+	// error later, only if a type happens to miss reflection.
+	if o.protoDir != "" {
+		if err := validateProtoDir(o.protoDir); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 
 	// Create a separate context for dial/init operations with optional timeout
 	var initCtx context.Context
@@ -70,28 +80,34 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		return nil, fmt.Errorf("failed to fetch descriptors: %w", err)
 	}
 
-	// Build the file descriptor registry
-	files, err := buildFileDescriptorSet(descriptors)
+	// Build the file descriptor registry. Individual files that cannot be
+	// registered are skipped and recorded so one malformed reflected file does
+	// not make the whole client unusable.
+	files, skippedFiles, err := buildFileDescriptorSetReport(descriptors)
 	if err != nil {
 		conn.Close()
 		cancel()
 		return nil, fmt.Errorf("failed to build descriptor set: %w", err)
 	}
 
-	// Setup fallback registry
+	// Setup fallback registry. A configured proto directory is attached to a
+	// clone so per-client settings never mutate a shared or caller-owned
+	// registry.
 	var fallback *FallbackRegistry
-	if o.fallback != nil {
+	switch {
+	case o.fallback != nil:
 		fallback = o.fallback
-	} else if o.useGlobalFallback {
+	case o.useGlobalFallback:
 		fallback = GlobalFallback()
-	} else if o.protoDir != "" {
-		fallback = NewFallbackRegistry()
 	}
 
-	// Setup local proto directory if configured
-	if o.protoDir != "" && fallback != nil {
-		protoDir := NewProtoDir(o.protoDir)
-		fallback.SetProtoDir(protoDir)
+	if o.protoDir != "" {
+		base := fallback
+		if base == nil {
+			base = NewFallbackRegistry()
+		}
+		fallback = base.clone()
+		fallback.SetProtoDir(NewProtoDir(o.protoDir))
 	}
 
 	resolver := newResolver(clientCtx, files, conn, o.maxRetries, fallback)
@@ -108,6 +124,7 @@ func Dial(ctx context.Context, address string, opts ...Option) (*Client, error) 
 		resolver: resolver,
 		opts:     o,
 		catalog:  catalog,
+		skipped:  skippedFiles,
 	}, nil
 }
 
@@ -203,6 +220,21 @@ func (c *Client) Resolver() *Resolver {
 // Conn returns the underlying gRPC connection.
 func (c *Client) Conn() *grpc.ClientConn {
 	return c.conn
+}
+
+// SkippedFiles returns reflected proto files that could not be registered
+// during Dial. These are typically files with unresolvable dependencies or
+// custom options; methods that depend on them will not be callable.
+func (c *Client) SkippedFiles() []string {
+	return append([]string(nil), c.skipped...)
+}
+
+// ProtoDir returns the configured local proto directory, or nil if none.
+func (c *Client) ProtoDir() *ProtoDir {
+	if c.resolver == nil {
+		return nil
+	}
+	return c.resolver.ProtoDir()
 }
 
 // Close closes the client connection.
@@ -633,6 +665,14 @@ func (r *Resolver) FindExtensionByNumber(_ protoreflect.FullName, _ protoreflect
 // Files returns the underlying file registry.
 func (r *Resolver) Files() *protoregistry.Files {
 	return r.files
+}
+
+// ProtoDir returns the configured local proto directory, or nil if none.
+func (r *Resolver) ProtoDir() *ProtoDir {
+	if r.fallback == nil {
+		return nil
+	}
+	return r.fallback.ProtoDir()
 }
 
 // processFileDescriptorsLocked processes file descriptors while holding the lock
