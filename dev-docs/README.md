@@ -13,6 +13,8 @@ them.
 
 - `architecture/overview.md` — how reflection, type resolution, fallback, retry,
   and threading fit together, plus compatibility and known limitations.
+- `architecture/signing.md` — transaction signing/broadcasting design, key
+  algorithms, dependencies, and security boundaries.
 
 ## Operations
 

@@ -18,6 +18,7 @@ optional local proto directory.
 | Pagination | `pagination.go` | `Method.EachPage` over Cosmos `pagination.key`/`next_key` |
 | Fallback | `fallback.go`, `protodir.go` | Pre-registered descriptors and lazy local `.proto` compilation |
 | Cosmos helpers | `cosmos.go` | Convenience wrappers over reflected Cosmos query methods |
+| Signing | `signing/` | `SIGN_MODE_DIRECT` transaction building, signing, broadcasting |
 | ALPN workaround | `alpnfix/` | Disables grpc-go ALPN enforcement for older nodes |
 
 ## Connection and reflection flow
@@ -92,4 +93,5 @@ version cache is a package-level map guarded by a mutex and cleared on
 
 - Human contract: [`../README.md`](../README.md)
 - Agent project map: [`../AGENTS.md`](../AGENTS.md)
+- Signing design: [`signing.md`](signing.md)
 - Fallback runbook: [`operations/deprecated-protos.md`](../operations/deprecated-protos.md)

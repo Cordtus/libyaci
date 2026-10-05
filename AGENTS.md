@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`libyaci` is a Go module for dynamic gRPC queries against reflection-enabled Cosmos SDK chains. Core package files live at the repository root: `client.go` handles dialing and invocation, `reflection.go` fetches descriptors, `catalog.go` indexes reflected capabilities, `method.go`, `request.go`, and `response.go` expose descriptor-backed calls, `fallback.go` and `protodir.go` provide secondary proto fallback support, and `cosmos.go` contains Cosmos convenience methods. The `alpnfix/` subpackage contains the grpc-go ALPN workaround. Root-level `*_test.go` files hold package tests and `mock_test.go` provides the bufconn reflection test server. Runnable samples are under `examples/`, including `examples/cli` and `examples/explorer`.
+`libyaci` is a Go module for dynamic gRPC queries against reflection-enabled Cosmos SDK chains. Core package files live at the repository root: `client.go` handles dialing and invocation, `reflection.go` fetches descriptors, `catalog.go` indexes reflected capabilities, `method.go`, `request.go`, and `response.go` expose descriptor-backed calls, `fallback.go` and `protodir.go` provide secondary proto fallback support, and `cosmos.go` contains Cosmos convenience methods. The `signing/` subpackage adds transaction signing and broadcasting. The `alpnfix/` subpackage contains the grpc-go ALPN workaround. Root-level `*_test.go` files hold package tests and `mock_test.go` provides the bufconn reflection test server. Runnable samples are under `examples/`, including `examples/cli` and `examples/explorer`.
 
 ## Documentation
 
@@ -47,13 +47,14 @@ Core components:
 - **Pagination** (`pagination.go`): `Method.EachPage` follows `pagination.key`/`next_key` for standard Cosmos queries and aborts if the server repeats a key.
 - **Fallback** (`fallback.go`, `protodir.go`): `FallbackRegistry` plus `ProtoDir`, which compiles local `.proto` files with `protocompile` on first miss. A configured `WithProtoDir` is attached to a clone so it never mutates the shared/global registry.
 - **Cosmos** (`cosmos.go`): convenience helpers over reflected Cosmos SDK query methods.
+- **Signing** (`signing/`): `Signer` interface plus an in-process secp256k1/ethsecp256k1 signer (raw key or BIP39 mnemonic). `BuildAndSign` assembles `SIGN_MODE_DIRECT` transactions using reflection-resolved tx scaffolding, then `Broadcast`/`Simulate` submit them. See [`dev-docs/architecture/signing.md`](dev-docs/architecture/signing.md).
 - **ALPN fix** (`alpnfix/`): import `_ "github.com/Cordtus/libyaci/alpnfix"` before gRPC imports to disable ALPN enforcement.
 
 Data flow: `Dial` → reflection snapshot → `buildFileDescriptorSetReport` → dynamic request → gRPC invoke → protojson marshal; unknown `Any` types are fetched on demand; deprecated types resolve through `WithProtoDir`.
 
 Method names use `package.Service.Method`, e.g. `cosmos.bank.v1beta1.Query.Balance`.
 
-Key patterns: dynamicpb for runtime messages; conditional retry (only `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`); per-call timeout via `WithDefaultTimeout`/`InvokeWithTimeout`; unary RPCs only (streaming methods return a clear error). Dependencies are intentionally minimal: `google.golang.org/grpc`, `google.golang.org/protobuf`, `github.com/bufbuild/protocompile`. No Cosmos SDK dependency.
+Key patterns: dynamicpb for runtime messages; conditional retry (only `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`); per-call timeout via `WithDefaultTimeout`/`InvokeWithTimeout`; unary RPCs only (streaming methods return a clear error). Core dependencies are intentionally minimal: `google.golang.org/grpc`, `google.golang.org/protobuf`, `github.com/bufbuild/protocompile`; the optional `signing/` subpackage adds `btcec/v2`, `btcutil/bech32`, `cosmos/go-bip39`, and `golang.org/x/crypto`. No Cosmos SDK dependency in either case.
 
 ## Local Proto Fallback
 

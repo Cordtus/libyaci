@@ -12,6 +12,7 @@ A dynamic gRPC client for Go that uses server reflection to discover services, b
 - Local proto directory fallback for historical/deprecated types
 - Thread-safe concurrent access
 - Raw protobuf transaction decoding (Cosmos SDK)
+- Transaction signing and broadcasting (`signing` subpackage): secp256k1/ethsecp256k1, raw key or BIP39 mnemonic, SIGN_MODE_DIRECT
 - Cosmos convenience helpers layered on top of reflected capabilities
 
 ## Installation
@@ -187,6 +188,79 @@ client, err := libyaci.Dial(ctx, endpoint,
 | `WithProtoDir(path)` | Load local `.proto` files into this client for fallback resolution |
 | `WithGlobalFallback()` | Explicitly use the shared global fallback registry |
 | `WithFallbackRegistry(fb)` | Use a custom fallback registry |
+
+## Transaction Signing & Broadcasting
+
+The `signing` subpackage builds, signs (`SIGN_MODE_DIRECT`), and broadcasts Cosmos transactions. Transaction scaffolding (`cosmos.tx.v1beta1.*`, `cosmos.crypto.secp256k1.PubKey`, `cosmos.base.v1beta1.Coin`) is resolved from server reflection, so no generated Cosmos stubs are needed. It adds cryptographic dependencies (`btcec/v2`, `btcutil/bech32`, `cosmos/go-bip39`, `golang.org/x/crypto`) that are only compiled when you import the subpackage.
+
+```go
+import (
+    "context"
+
+    "github.com/Cordtus/libyaci"
+    "github.com/Cordtus/libyaci/signing"
+)
+
+ctx := context.Background()
+client, err := libyaci.Dial(ctx, "grpc.example.com:443", libyaci.WithInsecure())
+if err != nil { /* ... */ }
+defer client.Close()
+
+// Key source: mnemonic (BIP44) or a raw hex/base64 private key.
+signer, err := signing.NewMnemonicSigner(mnemonic, signing.DefaultHDPath, signing.Secp256k1)
+if err != nil { /* ... */ }
+// or: signing.NewPrivateKeySigner(hexKey, signing.EthSecp256k1)
+
+address, err := signer.Address("cosmos")
+if err != nil { /* ... */ }
+
+accountNumber, sequence, err := signing.FetchAccountNumberSequence(ctx, client, address)
+if err != nil { /* ... */ }
+
+msgs := []signing.Msg{
+    []byte(`{"@type":"/cosmos.bank.v1beta1.MsgSend",
+             "fromAddress":"cosmos1...","toAddress":"cosmos1...",
+             "amount":[{"denom":"uatom","amount":"1000"}]}`),
+}
+
+tx, err := signing.BuildAndSign(client.Resolver(), signer, "cosmoshub-4", msgs, signing.TxOptions{
+    Memo:          "",
+    Fee:           []signing.Coin{{Denom: "uatom", Amount: "5000"}},
+    GasLimit:      200000,
+    AccountNumber: accountNumber,
+    Sequence:      sequence,
+    AddressPrefix: "cosmos",
+})
+if err != nil { /* ... */ }
+
+// Optional: estimate gas before broadcasting.
+gas, err := signing.Simulate(ctx, client, tx.TxBytes)
+
+resp, err := signing.Broadcast(ctx, client, tx.TxBytes, signing.BroadcastModeSync)
+if err != nil { /* CheckTx rejected or transport error */ }
+_ = resp.TxHash
+```
+
+### Signing API
+
+| Item | Description |
+|------|-------------|
+| `Signer` | Interface: `PublicKey`, `Address(prefix)`, `Sign(signDoc)`, `PubKeyTypeURL`, `Algorithm` |
+| `NewPrivateKeySigner(secret, algo, ...)` | secp256k1 key from 64-char hex or base64 |
+| `NewMnemonicSigner(mnemonic, hdPath, algo, ...)` | BIP39/BIP44 derivation (default `m/44'/118'/0'/0/0`) |
+| `GenerateMnemonic(bits)` | New BIP39 mnemonic (128–256 bits) |
+| `PrivateKeySigner.EthereumAddress()` | Lowercase `0x` address for ethsecp256k1 keys |
+| `BuildAndSign(resolver, signer, chainID, msgs, opts)` | Returns body/auth/sign-doc/tx bytes, signature, tx hash |
+| `FetchAccountNumberSequence(ctx, client, address)` | Account number and sequence (AccountInfo, then Account) |
+| `Broadcast(ctx, client, txBytes, mode)` | `BROADCAST_MODE_SYNC`/`ASYNC`/`BLOCK`; errors on non-zero CheckTx code |
+| `Simulate(ctx, client, txBytes)` | Returns `gasInfo.gasUsed` |
+
+Notes:
+- `KeyAlgorithm` is `signing.Secp256k1` (standard Cosmos) or `signing.EthSecp256k1` (Ethermint/Injective/Sei). For a non-default ethsecp256k1 public-key type URL, pass `signing.WithPubKeyTypeURL`.
+- Signatures are deterministic (RFC 6979) 64-byte `r||s` over `SHA-256(signDoc)`, as required by `SIGN_MODE_DIRECT`.
+- Message payloads are protobuf-JSON objects with an `@type`; any type reachable by reflection or `WithProtoDir` can be signed.
+- **Security:** private keys and mnemonics are handled in-process. Never log secrets; prefer an external signer in production (implement the `Signer` interface — hardware, KMS, or remote signers plug in without changes).
+- Not yet implemented: `SIGN_MODE_AMINO_JSON`, legacy multisig, and fee estimation beyond `Simulate`.
 
 ## Core Methods
 
