@@ -202,19 +202,23 @@ func sendReflectionRequestWithRetry(ctx context.Context, conn *grpc.ClientConn, 
 		maxAttempts = 1
 	}
 
+	attempts := uint(0)
 	for attempt := uint(1); attempt <= maxAttempts; attempt++ {
+		attempts = attempt
 		resp, err = sendReflectionRequest(ctx, conn, req)
 		if err == nil {
 			return resp, nil
 		}
-		if attempt < maxAttempts {
+		if attempt < maxAttempts && isRetryableError(err) {
 			if sleepErr := sleepContext(ctx, time.Duration(2*attempt)*time.Second); sleepErr != nil {
 				return nil, sleepErr
 			}
+			continue
 		}
+		break
 	}
 
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxAttempts, err)
+	return nil, fmt.Errorf("failed after %d attempts: %w", attempts, err)
 }
 
 func sendReflectionRequest(ctx context.Context, conn *grpc.ClientConn, req reflectionRequest) (*reflectionResponse, error) {

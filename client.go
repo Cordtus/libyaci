@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -150,19 +152,23 @@ func (c *Client) InvokeWithRetryContext(ctx context.Context, method string, requ
 		maxAttempts = 1
 	}
 
+	attempts := uint(0)
 	for attempt := uint(1); attempt <= maxAttempts; attempt++ {
+		attempts = attempt
 		resp, lastErr = c.invokeOnce(callCtx, fullMethodPath, methodDesc, requestPayload)
 		if lastErr == nil {
 			return resp, nil
 		}
-		if attempt < maxAttempts {
+		if attempt < maxAttempts && isRetryableError(lastErr) {
 			if err := sleepContext(callCtx, time.Duration(2*attempt)*time.Second); err != nil {
 				return nil, err
 			}
+			continue
 		}
+		break
 	}
 
-	return nil, fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
+	return nil, fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
 }
 
 // InvokeRaw calls the method and returns the dynamic protobuf message directly.
@@ -308,6 +314,22 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+// isRetryableError reports whether a gRPC call error is worth retrying. Only
+// transient transport/server conditions are retried; application-level errors
+// such as InvalidArgument, NotFound, or PermissionDenied are returned to the
+// caller immediately.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Aborted:
+		return true
+	default:
+		return false
 	}
 }
 
