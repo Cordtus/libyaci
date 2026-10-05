@@ -251,16 +251,22 @@ _ = resp.TxHash
 | `GenerateMnemonic(bits)` | New BIP39 mnemonic (128–256 bits) |
 | `PrivateKeySigner.EthereumAddress()` | Lowercase `0x` address for ethsecp256k1 keys |
 | `BuildAndSign(resolver, signer, chainID, msgs, opts)` | Returns body/auth/sign-doc/tx bytes, signature, tx hash |
+| `ResolvePubKeyTypeURL(resolver, algo)` | Picks the reflected public-key type URL for an algorithm |
 | `FetchAccountNumberSequence(ctx, client, address)` | Account number and sequence (AccountInfo, then Account) |
 | `Broadcast(ctx, client, txBytes, mode)` | `BROADCAST_MODE_SYNC`/`ASYNC`/`BLOCK`; errors on non-zero CheckTx code |
 | `Simulate(ctx, client, txBytes)` | Returns `gasInfo.gasUsed` |
 
 Notes:
-- `KeyAlgorithm` is `signing.Secp256k1` (standard Cosmos) or `signing.EthSecp256k1` (Ethermint/Injective/Sei). For a non-default ethsecp256k1 public-key type URL, pass `signing.WithPubKeyTypeURL`.
+- `KeyAlgorithm` is `signing.Secp256k1` (standard Cosmos) or `signing.EthSecp256k1` (Ethermint/Injective/Sei). ethsecp256k1 chains use different public-key type URLs, so call `signing.ResolvePubKeyTypeURL(client.Resolver(), algo)` and pass the result to `signing.WithPubKeyTypeURL`.
+- The bech32 prefix must match the chain's configured prefix (`cosmos`, `osmo`, `testcore`, `sei`, `inj`, …). `client.GetBech32Prefix()` discovers it when the chain advertises `cosmos.auth.v1beta1.Query.Bech32Prefix`; otherwise supply it.
 - Signatures are deterministic (RFC 6979) 64-byte `r||s` over `SHA-256(signDoc)`, as required by `SIGN_MODE_DIRECT`.
 - Message payloads are protobuf-JSON objects with an `@type`; any type reachable by reflection or `WithProtoDir` can be signed.
 - **Security:** private keys and mnemonics are handled in-process. Never log secrets; prefer an external signer in production (implement the `Signer` interface — hardware, KMS, or remote signers plug in without changes).
 - Not yet implemented: `SIGN_MODE_AMINO_JSON`, legacy multisig, and fee estimation beyond `Simulate`.
+
+### Live verification
+
+The signing path is exercised against live testnets by `signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`). It was verified against secp256k1 chains (Cosmos Hub theta, Celestia mocha-5, Akash sandbox-2, Coreum, Axelar, Noble, Seda, Sei atlantic-2) and ethsecp256k1 (Injective-888): transactions were built, signed, decoded by the node, and reached the ante handler (rejected only for missing funds/accounts, which is expected for unfunded test keys). Self-signed TLS endpoints need a custom transport; libyaci does not yet expose a `WithTLSConfig` option.
 
 ## Core Methods
 

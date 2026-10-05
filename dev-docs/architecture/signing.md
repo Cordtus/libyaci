@@ -14,9 +14,9 @@ reflection.
   `client.Resolver()`). Messages are assembled as protobuf-JSON and decoded with
   `protojson`, then serialized with deterministic `proto.Marshal`.
 - **Signer interface.** `Signer` exposes `PublicKey`, `Address(prefix)`, `Sign`,
-  `PubKeyTypeURL`, and `Algorithm`, so hardware, KMS, remote, or multisig
-  signers can be added without touching the tx builder. The built-in
-  `PrivateKeySigner` is the in-process implementation.
+  and `PubKeyTypeURL`, so hardware, KMS, remote, or multisig signers can be
+  added without touching the tx builder. The built-in `PrivateKeySigner` is the
+  in-process implementation.
 - **Direct mode only.** Signatures are deterministic (RFC 6979) 64-byte `r||s`
   over `SHA-256(signDocBytes)`, placed in `SIGN_MODE_DIRECT` `ModeInfo`.
   `SIGN_MODE_AMINO_JSON` is not implemented.
@@ -24,7 +24,15 @@ reflection.
   `EthSecp256k1` (Keccak-256 address). The public-key Any type URL defaults to
   `/cosmos.crypto.secp256k1.PubKey` or
   `/ethermint.crypto.v1.ethsecp256k1.PubKey` and is overridable with
-  `WithPubKeyTypeURL` for chains that use a different ethsecp256k1 URL.
+  `WithPubKeyTypeURL` for chains that use a different ethsecp256k1 URL (for
+  example Injective's `/injective.crypto.v1beta1.ethsecp256k1.PubKey`). Use
+  `ResolvePubKeyTypeURL(resolver, algo)` to pick the URL the chain actually
+  reflects instead of hard-coding it.
+- **Bech32 prefix.** Addresses must use the chain's configured prefix
+  (`cosmos`, `osmo`, `testcore`, `sei`, `inj`, …). `client.GetBech32Prefix()`
+  discovers it when `cosmos.auth.v1beta1.Query.Bech32Prefix` is advertised;
+  otherwise the caller supplies it. A wrong prefix fails the node's address
+  decoding, not our construction.
 - **Key sources.** Raw 32-byte key (64-char hex or base64) and BIP39 mnemonic
   with BIP44 derivation (default `m/44'/118'/0'/0/0`). BIP32 child derivation is
   implemented in-package (HMAC-SHA512), so no external BIP32 dependency is
@@ -52,6 +60,29 @@ read-only users do not compile these.
   inclusion; use `BroadcastModeBlock` or a follow-up `GetTx` to wait for a
   block.
 - `Simulate` returns `gasInfo.gasUsed`; callers still choose the gas limit.
+
+## Live verification
+
+`signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`) builds,
+signs, and simulates a self-send against live testnets. Verified against:
+
+| Chain | chain-id | algo | outcome |
+|---|---|---|---|
+| Cosmos Hub theta | theta-testnet-001 | secp256k1 | descriptor fetch slow; endpoint-dependent |
+| Celestia | mocha-5 | secp256k1 | decoded; fee-payer account absent (expected) |
+| Akash | sandbox-2 | secp256k1 | decoded; fee-payer account absent |
+| Coreum | coreum-testnet-1 | secp256k1 | decoded; prefix `testcore` |
+| Axelar | axelar-testnet-lisbon-3 | secp256k1 | decoded; fee-payer account absent |
+| Noble | grand-1 | secp256k1 | decoded; fee-payer account absent |
+| Seda | seda-1-testnet | secp256k1 | decoded; fee-payer account absent |
+| Sei | atlantic-2 | secp256k1 | decoded; reached fee check (insufficient funds) |
+| Injective | injective-888 | ethsecp256k1 | decoded; reached fee check (insufficient funds) |
+
+"Reached the fee check" means the ante handler verified the signature and then
+failed on funds, which is the expected outcome for an unfunded test key. All
+outcomes are ante errors, never decode/signature errors. Self-signed TLS
+endpoints (for example `celestia-testnet-grpc.itrocket.net:443`) cannot be used
+until a `WithTLSConfig` option exists.
 
 ## Not implemented
 
