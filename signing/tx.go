@@ -1,0 +1,467 @@
+package signing
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/Cordtus/libyaci"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/dynamicpb"
+)
+
+// Resolver resolves protobuf message and extension types. libyaci's
+// *Resolver and *dynamicpb.Types both satisfy it.
+type Resolver interface {
+	protoregistry.MessageTypeResolver
+	protoregistry.ExtensionTypeResolver
+}
+
+// Msg is a protobuf-JSON message object that includes an "@type" field, for
+// example {"@type":"/cosmos.bank.v1beta1.MsgSend","fromAddress":"...",...}.
+type Msg = json.RawMessage
+
+// Coin is a Cosmos SDK coin.
+type Coin struct {
+	Denom  string `json:"denom"`
+	Amount string `json:"amount"`
+}
+
+// TxOptions controls transaction construction.
+type TxOptions struct {
+	Memo          string
+	TimeoutHeight uint64
+	Fee           []Coin
+	GasLimit      uint64
+	FeePayer      string
+	FeeGranter    string
+	AccountNumber uint64
+	Sequence      uint64
+	// AddressPrefix, when set, populates SignedTx.SignerAddress.
+	AddressPrefix string
+}
+
+// SignedTx is a fully signed, broadcast-ready transaction.
+type SignedTx struct {
+	BodyBytes     []byte
+	AuthInfoBytes []byte
+	SignDocBytes  []byte
+	Signature     []byte // 64-byte secp256k1 r||s
+	TxBytes       []byte
+	TxHash        string // uppercase hex of SHA-256(TxBytes)
+	SignerAddress string // empty unless TxOptions.AddressPrefix was set
+}
+
+const (
+	txBodyType     = "cosmos.tx.v1beta1.TxBody"
+	authInfoType   = "cosmos.tx.v1beta1.AuthInfo"
+	signDocType    = "cosmos.tx.v1beta1.SignDoc"
+	txRawType      = "cosmos.tx.v1beta1.TxRaw"
+	broadcastTx    = "cosmos.tx.v1beta1.Service.BroadcastTx"
+	simulateTx     = "cosmos.tx.v1beta1.Service.Simulate"
+	signModeDirect = "SIGN_MODE_DIRECT"
+)
+
+// BuildAndSign assembles, signs (SIGN_MODE_DIRECT), and serializes a
+// transaction. Message types and the transaction scaffolding are resolved
+// through the provided Resolver (typically client.Resolver()).
+func BuildAndSign(resolver Resolver, signer Signer, chainID string, msgs []Msg, opts TxOptions) (*SignedTx, error) {
+	if resolver == nil {
+		return nil, errors.New("resolver is required")
+	}
+	if signer == nil {
+		return nil, errors.New("signer is required")
+	}
+	if strings.TrimSpace(chainID) == "" {
+		return nil, errors.New("chainID is required")
+	}
+	if len(msgs) == 0 {
+		return nil, errors.New("at least one message is required")
+	}
+	for i, raw := range msgs {
+		if !json.Valid(raw) {
+			return nil, fmt.Errorf("message %d is not valid JSON", i+1)
+		}
+	}
+	for i, coin := range opts.Fee {
+		if coin.Denom == "" || coin.Amount == "" {
+			return nil, fmt.Errorf("fee coin %d requires both denom and amount", i+1)
+		}
+	}
+
+	bodyBytes, err := marshalDynamic(resolver, txBodyType, txBodyDoc(msgs, opts))
+	if err != nil {
+		return nil, err
+	}
+	authInfoBytes, err := marshalDynamic(resolver, authInfoType, authInfoDoc(signer, opts))
+	if err != nil {
+		return nil, err
+	}
+	signDocBytes, err := marshalDynamic(resolver, signDocType, map[string]any{
+		"body_bytes":      base64.StdEncoding.EncodeToString(bodyBytes),
+		"auth_info_bytes": base64.StdEncoding.EncodeToString(authInfoBytes),
+		"chain_id":        chainID,
+		"account_number":  strconv.FormatUint(opts.AccountNumber, 10),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	signature, err := signer.Sign(signDocBytes)
+	if err != nil {
+		return nil, fmt.Errorf("sign: %w", err)
+	}
+
+	txBytes, err := marshalDynamic(resolver, txRawType, map[string]any{
+		"body_bytes":      base64.StdEncoding.EncodeToString(bodyBytes),
+		"auth_info_bytes": base64.StdEncoding.EncodeToString(authInfoBytes),
+		"signatures":      []string{base64.StdEncoding.EncodeToString(signature)},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := &SignedTx{
+		BodyBytes:     bodyBytes,
+		AuthInfoBytes: authInfoBytes,
+		SignDocBytes:  signDocBytes,
+		Signature:     signature,
+		TxBytes:       txBytes,
+		TxHash:        strings.ToUpper(hex.EncodeToString(sha256Sum(txBytes))),
+	}
+	if opts.AddressPrefix != "" {
+		address, err := signer.Address(opts.AddressPrefix)
+		if err != nil {
+			return nil, err
+		}
+		out.SignerAddress = address
+	}
+	return out, nil
+}
+
+func txBodyDoc(msgs []Msg, opts TxOptions) map[string]any {
+	doc := map[string]any{"messages": msgs}
+	if opts.Memo != "" {
+		doc["memo"] = opts.Memo
+	}
+	if opts.TimeoutHeight != 0 {
+		doc["timeout_height"] = strconv.FormatUint(opts.TimeoutHeight, 10)
+	}
+	return doc
+}
+
+func authInfoDoc(signer Signer, opts TxOptions) map[string]any {
+	coins := make([]map[string]string, 0, len(opts.Fee))
+	for _, coin := range opts.Fee {
+		if coin.Denom == "" || coin.Amount == "" {
+			continue
+		}
+		coins = append(coins, map[string]string{"denom": coin.Denom, "amount": coin.Amount})
+	}
+	fee := map[string]any{
+		"amount":    coins,
+		"gas_limit": strconv.FormatUint(opts.GasLimit, 10),
+	}
+	if opts.FeePayer != "" {
+		fee["payer"] = opts.FeePayer
+	}
+	if opts.FeeGranter != "" {
+		fee["granter"] = opts.FeeGranter
+	}
+	return map[string]any{
+		"signer_infos": []any{
+			map[string]any{
+				"public_key": map[string]any{
+					"@type": signer.PubKeyTypeURL(),
+					"key":   base64.StdEncoding.EncodeToString(signer.PublicKey()),
+				},
+				"mode_info": map[string]any{
+					"single": map[string]any{"mode": signModeDirect},
+				},
+				"sequence": strconv.FormatUint(opts.Sequence, 10),
+			},
+		},
+		"fee": fee,
+	}
+}
+
+func marshalDynamic(resolver Resolver, fullName string, doc map[string]any) ([]byte, error) {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s: %w", fullName, err)
+	}
+	msgType, err := resolver.FindMessageByName(protoreflect.FullName(fullName))
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s from reflection: %w", fullName, err)
+	}
+	msg := dynamicpb.NewMessage(msgType.Descriptor())
+	if err := (protojson.UnmarshalOptions{Resolver: resolver}).Unmarshal(raw, msg); err != nil {
+		return nil, fmt.Errorf("build %s: %w", fullName, err)
+	}
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", fullName, err)
+	}
+	return encoded, nil
+}
+
+func sha256Sum(data []byte) []byte {
+	sum := sha256.Sum256(data)
+	return sum[:]
+}
+
+// BroadcastMode selects how a transaction is submitted.
+type BroadcastMode string
+
+const (
+	BroadcastModeSync  BroadcastMode = "BROADCAST_MODE_SYNC"
+	BroadcastModeAsync BroadcastMode = "BROADCAST_MODE_ASYNC"
+	BroadcastModeBlock BroadcastMode = "BROADCAST_MODE_BLOCK"
+)
+
+// BroadcastResponse summarizes a BroadcastTx response. Code 0 means CheckTx
+// accepted the transaction; a non-zero code means it was rejected.
+type BroadcastResponse struct {
+	Code      uint32
+	Codespace string
+	TxHash    string
+	RawLog    string
+	Raw       json.RawMessage
+}
+
+// Broadcast submits signed transaction bytes via
+// cosmos.tx.v1beta1.Service.BroadcastTx. It returns an error if the node
+// rejects the transaction (non-zero CheckTx code).
+func Broadcast(ctx context.Context, client *libyaci.Client, txBytes []byte, mode BroadcastMode) (*BroadcastResponse, error) {
+	if client == nil {
+		return nil, errors.New("client is required")
+	}
+	if len(txBytes) == 0 {
+		return nil, errors.New("txBytes is empty")
+	}
+	if mode == "" {
+		mode = BroadcastModeSync
+	}
+	method, err := client.Method(broadcastTx)
+	if err != nil {
+		return nil, err
+	}
+	req := method.NewRequest()
+	if err := req.Set("tx_bytes", txBytes); err != nil {
+		return nil, fmt.Errorf("set tx_bytes: %w", err)
+	}
+	if err := req.Set("mode", string(mode)); err != nil {
+		return nil, fmt.Errorf("set mode: %w", err)
+	}
+	resp, err := method.Call(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	data, err := resp.JSON()
+	if err != nil {
+		return nil, err
+	}
+	return parseBroadcastResponse(data)
+}
+
+func parseBroadcastResponse(data []byte) (*BroadcastResponse, error) {
+	result := &BroadcastResponse{Raw: data}
+	fields := unwrapTxResponse(data)
+	result.Code = uint32(uintField(fields, "code"))
+	result.Codespace = stringField(fields, "codespace")
+	result.TxHash = stringField(fields, "txhash", "txHash", "hash")
+	result.RawLog = stringField(fields, "rawLog", "raw_log", "log")
+	if result.Code == 0 {
+		return result, nil
+	}
+	details := []string{fmt.Sprintf("code %d", result.Code)}
+	if result.Codespace != "" {
+		details = append(details, "codespace "+result.Codespace)
+	}
+	if result.TxHash != "" {
+		details = append(details, "tx "+result.TxHash)
+	}
+	if log := humanReadableLog(result.RawLog); log != "" {
+		details = append(details, log)
+	}
+	return result, fmt.Errorf("broadcast rejected: %s", strings.Join(details, "; "))
+}
+
+// humanReadableLog decodes the base64 form that raw_log takes after the
+// descriptor patch (string -> bytes), falling back to the raw value.
+func humanReadableLog(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && utf8.Valid(decoded) {
+		return string(decoded)
+	}
+	return raw
+}
+
+// Simulate estimates gas for signed transaction bytes via
+// cosmos.tx.v1beta1.Service.Simulate.
+func Simulate(ctx context.Context, client *libyaci.Client, txBytes []byte) (uint64, error) {
+	if client == nil {
+		return 0, errors.New("client is required")
+	}
+	if len(txBytes) == 0 {
+		return 0, errors.New("txBytes is empty")
+	}
+	method, err := client.Method(simulateTx)
+	if err != nil {
+		return 0, err
+	}
+	req := method.NewRequest()
+	if err := req.Set("tx_bytes", txBytes); err != nil {
+		return 0, fmt.Errorf("set tx_bytes: %w", err)
+	}
+	resp, err := method.Call(ctx, req)
+	if err != nil {
+		return 0, err
+	}
+	data, err := resp.JSON()
+	if err != nil {
+		return 0, err
+	}
+	return parseSimulateGas(data)
+}
+
+func parseSimulateGas(data []byte) (uint64, error) {
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return 0, fmt.Errorf("parse simulate response: %w", err)
+	}
+	gasInfo, _ := decoded["gasInfo"].(map[string]any)
+	if gasInfo == nil {
+		gasInfo, _ = decoded["gas_info"].(map[string]any)
+	}
+	if gasInfo != nil {
+		if gas, ok := toUint(firstOf(gasInfo, "gasUsed", "gas_used")); ok {
+			return gas, nil
+		}
+	}
+	return 0, errors.New("simulate response did not contain gasInfo.gasUsed")
+}
+
+// FetchAccountNumberSequence looks up an account's number and sequence, trying
+// AccountInfo first and falling back to the Account query.
+func FetchAccountNumberSequence(ctx context.Context, client *libyaci.Client, address string) (uint64, uint64, error) {
+	if client == nil {
+		return 0, 0, errors.New("client is required")
+	}
+	if strings.TrimSpace(address) == "" {
+		return 0, 0, errors.New("address is required")
+	}
+	if client.SupportsMethod("cosmos.auth.v1beta1.Query.AccountInfo") {
+		info, err := client.GetAccountInfo(address)
+		if err == nil {
+			number, numberErr := strconv.ParseUint(strings.TrimSpace(info.Info.AccountNumber), 10, 64)
+			sequence, seqErr := strconv.ParseUint(strings.TrimSpace(info.Info.Sequence), 10, 64)
+			if numberErr == nil && seqErr == nil {
+				return number, sequence, nil
+			}
+		}
+	}
+
+	resp, err := client.GetAccount(address)
+	if err != nil {
+		return 0, 0, fmt.Errorf("query account: %w", err)
+	}
+	return parseAccountSequence(resp.Account)
+}
+
+func parseAccountSequence(raw json.RawMessage) (uint64, uint64, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0, 0, fmt.Errorf("parse account: %w", err)
+	}
+	// Module/vesting accounts nest a baseAccount.
+	if base, ok := obj["baseAccount"].(map[string]any); ok {
+		if number, sequence, ok := accountNumbers(base); ok {
+			return number, sequence, nil
+		}
+	}
+	if number, sequence, ok := accountNumbers(obj); ok {
+		return number, sequence, nil
+	}
+	return 0, 0, errors.New("account number and sequence were not found in the account response")
+}
+
+func accountNumbers(obj map[string]any) (uint64, uint64, bool) {
+	number, numberOK := toUint(firstOf(obj, "accountNumber", "account_number"))
+	sequence, seqOK := toUint(firstOf(obj, "sequence"))
+	if !numberOK || !seqOK {
+		return 0, 0, false
+	}
+	return number, sequence, true
+}
+
+func firstOf(values map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func unwrapTxResponse(data []byte) map[string]any {
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil
+	}
+	if raw, ok := decoded["txResponse"].(map[string]any); ok {
+		return raw
+	}
+	if raw, ok := decoded["tx_response"].(map[string]any); ok {
+		return raw
+	}
+	return decoded
+}
+
+func uintField(values map[string]any, keys ...string) uint64 {
+	for _, key := range keys {
+		if value, ok := toUint(values[key]); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func stringField(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if raw, ok := values[key].(string); ok {
+			return strings.TrimSpace(raw)
+		}
+	}
+	return ""
+}
+
+func toUint(raw any) (uint64, bool) {
+	switch typed := raw.(type) {
+	case float64:
+		if typed >= 0 {
+			return uint64(typed), true
+		}
+	case string:
+		if parsed, err := strconv.ParseUint(strings.TrimSpace(typed), 10, 64); err == nil {
+			return parsed, true
+		}
+	case json.Number:
+		if parsed, err := strconv.ParseUint(typed.String(), 10, 64); err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
