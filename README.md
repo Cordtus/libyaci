@@ -86,8 +86,9 @@ func main() {
 client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithInsecure(),                         // Disable TLS
     libyaci.WithMaxRetries(5),                      // Retry count (default: 3)
-    libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 4MB)
+    libyaci.WithMaxRecvMsgSize(16 * 1024 * 1024),   // Max message size (default: 16MB)
     libyaci.WithDialTimeout(30 * time.Second),      // Connection timeout (default: no timeout)
+    libyaci.WithDefaultTimeout(10 * time.Second),   // Timeout per invocation (includes retries)
     libyaci.WithSDKVersion("0.47.0"),               // Diagnostic metadata only
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
     libyaci.WithProtoDir("./protos"),               // Secondary fallback for deprecated types
@@ -144,7 +145,9 @@ protos/
   cosmos/staking/v1beta1/tx.proto
 ```
 
-Proto files are loaded lazily on first type resolution failure. Standard protobuf imports (`google/protobuf/*`) are automatically available.
+Proto files are loaded lazily on first type resolution failure. Standard protobuf imports (`google/protobuf/*`) are automatically available. The configured directory is validated when `Dial` runs, and can be retrieved with `client.ProtoDir()`.
+
+UTF-8 recovery (patching a `string` field to `bytes` when it contains binary data) works for both reflected and local-proto types, so historical transactions that decode to deprecated message types are recoverable.
 
 ### Resolution Order
 
@@ -216,6 +219,8 @@ Legacy JSON helpers remain available:
 | `Invoke(method string, request []byte) ([]byte, error)` | Call any method with protobuf JSON bytes |
 | `InvokeRaw(method string, request []byte) (*dynamicpb.Message, error)` | Call method and return a raw dynamic message |
 | `InvokeContext(ctx, method, request)` | Call with a caller-controlled context |
+| `InvokeWithTimeout(method, request, timeout)` | Call with a per-call timeout |
+| `InvokeWithRetry(method, request, maxRetries)` | Call with an explicit retry budget |
 
 ### Utilities
 
@@ -224,8 +229,16 @@ Legacy JSON helpers remain available:
 | `ExtractField(method string, request []byte, field string) (any, error)` | Call method and extract specific field |
 | `DecodeTxBytes(txBytes []byte) ([]byte, error)` | Decode raw protobuf transaction bytes to JSON |
 | `Resolver() *Resolver` | Get underlying type resolver |
+| `ProtoDir() *ProtoDir` | Get the configured local proto directory (nil if none) |
+| `SkippedFiles() []string` | Reflected files skipped during Dial because they could not be registered |
 | `Conn() *grpc.ClientConn` | Get underlying gRPC connection |
 | `Close() error` | Close client connection |
+
+> **Unary only.** Streaming RPCs are advertised by the catalog but cannot be invoked yet; calling one returns a clear error. Protobuf extensions are resolved from reflected and fallback descriptors via `Resolver.FindExtensionByName` / `FindExtensionByNumber`.
+>
+> **`raw_log` encoding.** The descriptor patch for cosmos-sdk#22414 changes `cosmos.base.abci.v1beta1.TxResponse.raw_log` from string to bytes, so that field appears base64-encoded in JSON output. Other string fields that contain binary data are patched on demand (UTF-8 recovery) for both reflected and local-proto types.
+>
+> **Retries.** Only transient gRPC errors are retried (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`); application errors return immediately. `WithDefaultTimeout` / `InvokeWithTimeout` bound the whole invocation, including retries.
 
 ---
 
@@ -255,8 +268,8 @@ These helpers wrap common Cosmos SDK query methods when they are advertised by r
 | Method | Description | gRPC Method |
 |--------|-------------|-------------|
 | `GetTx(hash string) (*TxResponse, error)` | Get transaction by hash | `cosmos.tx.v1beta1.Service.GetTx` |
-| `GetTxsByHeight(height int64) ([]byte, error)` | Get transactions at height (raw JSON) | `cosmos.tx.v1beta1.Service.GetTxsEvent` |
-| `GetTxsByHeightParsed(height int64) (*TxsEventResponse, error)` | Get transactions at height (parsed) | `cosmos.tx.v1beta1.Service.GetTxsEvent` |
+| `GetTxsByHeight(height int64) ([]byte, error)` | Get all transactions at height (raw JSON, follows pagination) | `cosmos.tx.v1beta1.Service.GetTxsEvent` |
+| `GetTxsByHeightParsed(height int64) (*TxsEventResponse, error)` | Get all transactions at height (parsed, follows pagination) | `cosmos.tx.v1beta1.Service.GetTxsEvent` |
 | `GetBlockWithTxs(height int64) (*BlockWithTxsResponse, error)` | Get block with full transactions | `cosmos.tx.v1beta1.Service.GetBlockWithTxs` |
 
 ### Auth Module
@@ -598,7 +611,9 @@ The client is safe for concurrent use from multiple goroutines. The internal typ
 go build -o grpc-cli ./examples/cli
 
 ./grpc-cli -addr localhost:9090 -insecure -list
+./grpc-cli -addr localhost:9090 -insecure -list -json
 ./grpc-cli -addr localhost:9090 -insecure -method "cosmos.bank.v1beta1.Query.TotalSupply" -request "{}"
+./grpc-cli -addr localhost:9090 -insecure -protodir ./protos -method "cosmos.tx.v1beta1.Service.GetTx" -request '{"hash":"..."}'
 ```
 
 ## License

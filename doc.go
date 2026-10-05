@@ -68,7 +68,8 @@
 //	    libyaci.WithMaxRetries(5),
 //	    libyaci.WithMaxRecvMsgSize(16*1024*1024),
 //	    libyaci.WithDialTimeout(30*time.Second),
-//	    libyaci.WithProtoDir("./protos"),  // local protos for deprecated types
+//	    libyaci.WithDefaultTimeout(10*time.Second), // per-call timeout
+//	    libyaci.WithProtoDir("./protos"),           // local protos for deprecated types
 //	)
 //
 // # ALPN Connection Issues
