@@ -30,6 +30,7 @@ func (m *Method) EachPage(ctx context.Context, values map[string]any, fn func(*R
 		return fn(resp)
 	}
 
+	var seen = make(map[string]bool)
 	for {
 		resp, err := m.Call(ctx, req)
 		if err != nil {
@@ -46,6 +47,13 @@ func (m *Method) EachPage(ctx context.Context, values map[string]any, fn func(*R
 		if !ok || len(nextKey) == 0 {
 			return nil
 		}
+		// Guard against a server that repeats a key (consecutively or in a
+		// cycle), which would otherwise loop forever.
+		key := string(nextKey)
+		if seen[key] {
+			return fmt.Errorf("pagination next key did not advance; aborting after repeated key")
+		}
+		seen[key] = true
 		if err := req.SetPath("pagination.key", nextKey); err != nil {
 			return err
 		}

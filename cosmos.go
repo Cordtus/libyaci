@@ -1040,33 +1040,65 @@ func (e *Event) GetEventAttribute(key string) string {
 	return ""
 }
 
-// GetTxsByHeight fetches all transactions for a given block height.
+// GetTxsByHeight fetches all transactions for a given block height, following
+// pagination until the node reports no further pages.
 // Returns raw JSON response for flexibility in parsing.
 func (c *Client) GetTxsByHeight(height int64) ([]byte, error) {
 	handle, err := c.Method(methodGetTxsEvent)
 	if err != nil {
 		return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
 	}
-	req := handle.NewRequest()
-	fields := req.Message().Descriptor().Fields()
+
 	query := fmt.Sprintf("tx.height=%d", height)
-	if fields.ByName("query") != nil {
-		if err := req.Set("query", query); err != nil {
-			return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
-		}
-	} else if fields.ByName("events") != nil {
-		if err := req.Set("events", []any{query}); err != nil {
-			return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
-		}
-	} else {
+	fields := handle.NewRequest().Message().Descriptor().Fields()
+	values := map[string]any{}
+	switch {
+	case fields.ByName("query") != nil:
+		values["query"] = query
+	case fields.ByName("events") != nil:
+		values["events"] = []any{query}
+	default:
 		return nil, fmt.Errorf("GetTxsByHeight(%d): reflected request has neither query nor events field", height)
 	}
 
-	resp, err := handle.Call(c.ctx, req)
+	var txs, txResponses []json.RawMessage
+	var total string
+	var pagination json.RawMessage
+	err = handle.EachPage(c.ctx, values, func(resp *Response) error {
+		data, err := resp.JSON()
+		if err != nil {
+			return err
+		}
+		var page struct {
+			Txs         []json.RawMessage `json:"txs"`
+			TxResponses []json.RawMessage `json:"txResponses"`
+			Pagination  json.RawMessage   `json:"pagination"`
+			Total       string            `json:"total"`
+		}
+		if err := json.Unmarshal(data, &page); err != nil {
+			return err
+		}
+		txs = append(txs, page.Txs...)
+		txResponses = append(txResponses, page.TxResponses...)
+		if page.Total != "" {
+			total = page.Total
+		}
+		if len(page.Pagination) > 0 {
+			pagination = page.Pagination
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("GetTxsByHeight(%d): %w", height, err)
 	}
-	return resp.JSON()
+
+	combined := struct {
+		Txs         []json.RawMessage `json:"txs"`
+		TxResponses []json.RawMessage `json:"txResponses"`
+		Pagination  json.RawMessage   `json:"pagination,omitempty"`
+		Total       string            `json:"total,omitempty"`
+	}{Txs: txs, TxResponses: txResponses, Pagination: pagination, Total: total}
+	return json.Marshal(combined)
 }
 
 // GetTxsByHeightParsed fetches transactions and returns them in a structured format.
