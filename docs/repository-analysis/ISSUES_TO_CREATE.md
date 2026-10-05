@@ -1,5 +1,9 @@
 # Outstanding Features, TODOs, and Improvements
 
+> **Historical.** Automated scan from 2026-01-27; not maintained. Several items
+> are already implemented (for example pagination helpers) and some referenced
+> options have been removed. Verify against the current code. See `AGENTS.md`.
+
 This document catalogs all identified improvements, missing features, and enhancements discovered during a comprehensive repository scan on 2026-01-27.
 
 ## Summary

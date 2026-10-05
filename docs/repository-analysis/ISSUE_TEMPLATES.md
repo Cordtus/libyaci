@@ -1,5 +1,8 @@
 # GitHub Issue Templates
 
+> **Historical.** Automated scan from 2026-01-27; not maintained. Verify against
+> the current code before filing or acting on these issues. See `AGENTS.md`.
+
 This document contains ready-to-copy issue templates for quick creation in the GitHub UI.
 
 ---

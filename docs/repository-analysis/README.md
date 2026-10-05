@@ -1,5 +1,9 @@
 # Repository Analysis Documentation
 
+> **Historical.** This directory is an automated scan from 2026-01-27 and is not
+> maintained. Verify every claim against the current code before acting on it.
+> See the repository `AGENTS.md` for current architecture and behavior.
+
 This directory contains a comprehensive analysis of the libyaci repository, identifying outstanding features, improvements, and potential enhancements.
 
 ## 📖 Start Here

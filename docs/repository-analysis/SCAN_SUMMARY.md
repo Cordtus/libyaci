@@ -1,5 +1,9 @@
 # 📊 Repository Scan Summary - Visual Overview
 
+> **Historical.** Automated scan from 2026-01-27; not maintained. Verify against
+> the current code before acting on it. See the repository `AGENTS.md` for
+> current architecture and behavior.
+
 **Repository**: Cordtus/libyaci  
 **Scan Date**: 2026-01-27  
 **Total Issues Identified**: 25  

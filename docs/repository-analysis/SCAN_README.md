@@ -1,5 +1,9 @@
 # 📝 Repository Scan Documentation
 
+> **Historical.** Automated scan from 2026-01-27; not maintained. Verify against
+> the current code before acting on it. See the repository `AGENTS.md` for
+> current architecture and behavior.
+
 This directory contains the results of a comprehensive scan of the libyaci repository conducted on **2026-01-27** to identify outstanding features, TODOs, and potential improvements.
 
 ## 📄 Files in This Scan
