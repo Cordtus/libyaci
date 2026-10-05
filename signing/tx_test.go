@@ -186,6 +186,21 @@ func TestBuildAndSignRejectsBadFeeCoin(t *testing.T) {
 	}
 }
 
+func TestResolvePubKeyTypeURL(t *testing.T) {
+	resolver := testResolver{testFiles(t)}
+	url, err := ResolvePubKeyTypeURL(resolver, Secp256k1)
+	if err != nil || url != secp256k1PubKeyTypeURL {
+		t.Fatalf("secp url = %q, err = %v", url, err)
+	}
+	url, err = ResolvePubKeyTypeURL(resolver, EthSecp256k1)
+	if err != nil || url != ethSecp256k1PubKeyURL {
+		t.Fatalf("ethsecp url = %q, err = %v", url, err)
+	}
+	if _, err := ResolvePubKeyTypeURL(nil, Secp256k1); err == nil {
+		t.Fatal("nil resolver should error")
+	}
+}
+
 func TestPubKeyTypeURLOverride(t *testing.T) {
 	if _, err := NewPrivateKeySigner(privKeyOneHex, Secp256k1, WithPubKeyTypeURL("/x.y.PubKey")); err == nil {
 		t.Fatal("type URL override should be rejected for secp256k1")

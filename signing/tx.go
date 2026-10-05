@@ -27,6 +27,37 @@ type Resolver interface {
 	protoregistry.ExtensionTypeResolver
 }
 
+// PubKeyTypeURLCandidates returns the known public-key Any type URLs for an
+// algorithm, in preference order.
+func PubKeyTypeURLCandidates(algo KeyAlgorithm) []string {
+	switch algo {
+	case EthSecp256k1:
+		return []string{
+			ethSecp256k1PubKeyURL,
+			"/injective.crypto.v1beta1.ethsecp256k1.PubKey",
+			"/cosmos.crypto.ethsecp256k1.PubKey",
+		}
+	default:
+		return []string{secp256k1PubKeyTypeURL}
+	}
+}
+
+// ResolvePubKeyTypeURL returns the first public-key Any type URL for algo that
+// the resolver can resolve from reflection. Use it to choose the URL passed to
+// WithPubKeyTypeURL, since ethsecp256k1 chains differ (for example Injective).
+func ResolvePubKeyTypeURL(resolver Resolver, algo KeyAlgorithm) (string, error) {
+	if resolver == nil {
+		return "", errors.New("resolver is required")
+	}
+	for _, url := range PubKeyTypeURLCandidates(algo) {
+		name := protoreflect.FullName(strings.TrimPrefix(url, "/"))
+		if _, err := resolver.FindMessageByName(name); err == nil {
+			return url, nil
+		}
+	}
+	return "", fmt.Errorf("no %s public-key type was found via reflection", algo)
+}
+
 // Msg is a protobuf-JSON message object that includes an "@type" field, for
 // example {"@type":"/cosmos.bank.v1beta1.MsgSend","fromAddress":"...",...}.
 type Msg = json.RawMessage
