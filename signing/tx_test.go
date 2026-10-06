@@ -214,6 +214,50 @@ func TestPubKeyTypeURLOverride(t *testing.T) {
 	}
 }
 
+func TestFeeFromGasPrices(t *testing.T) {
+	fee, err := FeeFromGasPrices(100000, []Coin{{Denom: "uatom", Amount: "0.025"}})
+	if err != nil || len(fee) != 1 || fee[0].Amount != "2500" {
+		t.Fatalf("fee = %+v, err = %v, want 2500uatom", fee, err)
+	}
+	fee, err = FeeFromGasPrices(100000, []Coin{{Denom: "stake", Amount: "1"}})
+	if err != nil || fee[0].Amount != "100000" {
+		t.Fatalf("fee = %+v, err = %v, want 100000", fee, err)
+	}
+	// 1e-18 * 100000 rounds up to 1.
+	fee, err = FeeFromGasPrices(100000, []Coin{{Denom: "x", Amount: "0.000000000000000001"}})
+	if err != nil || fee[0].Amount != "1" {
+		t.Fatalf("fractional fee = %+v, err = %v, want 1", fee, err)
+	}
+	fee, err = FeeFromGasPrices(0, []Coin{{Denom: "x", Amount: "5"}})
+	if err != nil || fee[0].Amount != "0" {
+		t.Fatalf("zero-gas fee = %+v, err = %v", fee, err)
+	}
+	if fee, err := FeeFromGasPrices(10, nil); err != nil || fee != nil {
+		t.Fatalf("empty prices = %+v, err = %v, want nil/nil", fee, err)
+	}
+	if _, err := FeeFromGasPrices(10, []Coin{{Denom: "x", Amount: "abc"}}); err == nil {
+		t.Fatal("non-numeric price should error")
+	}
+	if _, err := FeeFromGasPrices(10, []Coin{{Denom: "", Amount: "1"}}); err == nil {
+		t.Fatal("missing denom should error")
+	}
+}
+
+func TestApplyGasAdjustment(t *testing.T) {
+	if got := applyGasAdjustment(100, 1.3); got != 130 {
+		t.Fatalf("adjustment = %d, want 130", got)
+	}
+	if got := applyGasAdjustment(100, 0); got != 130 {
+		t.Fatalf("zero adjustment should default to 1.3, got %d", got)
+	}
+	if got := applyGasAdjustment(100, 1); got != 100 {
+		t.Fatalf("adjustment 1 = %d, want 100", got)
+	}
+	if got := applyGasAdjustment(0, 1.3); got != 0 {
+		t.Fatalf("zero gas = %d, want 0", got)
+	}
+}
+
 func TestParseBroadcastResponse(t *testing.T) {
 	resp, err := parseBroadcastResponse([]byte(`{"txResponse":{"code":0,"txhash":"ABC"}}`))
 	if err != nil {

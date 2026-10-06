@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -383,6 +385,93 @@ func parseSimulateGas(data []byte) (uint64, error) {
 		}
 	}
 	return 0, errors.New("simulate response did not contain gasInfo.gasUsed")
+}
+
+const (
+	defaultGasAdjustment = 1.3
+	// provisionalGasLimit is used when estimating gas with no caller-supplied
+	// limit. It must stay below typical per-tx/block gas limits.
+	provisionalGasLimit = 1_000_000
+)
+
+// EstimateGas builds and signs the transaction with a provisional gas limit,
+// simulates it, and returns the gas used. Simulation requires the signer's
+// account (and fee payer) to exist on chain; some chains also require it to be
+// funded. The returned value is the raw gas used, before any adjustment.
+func EstimateGas(ctx context.Context, client *libyaci.Client, signer Signer, chainID string, msgs []Msg, opts TxOptions) (uint64, error) {
+	provisional := opts
+	if provisional.GasLimit == 0 {
+		provisional.GasLimit = provisionalGasLimit
+	}
+	tx, err := BuildAndSign(client.Resolver(), signer, chainID, msgs, provisional)
+	if err != nil {
+		return 0, err
+	}
+	return Simulate(ctx, client, tx.TxBytes)
+}
+
+// EstimateFee simulates the transaction, applies a gas adjustment to the gas
+// used, and computes the fee from per-gas-unit prices. The returned gas limit
+// and fee can be passed straight into BuildAndSign.
+//
+// gasPrices are price-per-gas-unit amounts, for example
+// {Denom: "uatom", Amount: "0.025"}. A non-positive gasAdjustment defaults to
+// 1.3. Simulation requires the signer's account to exist on chain; some chains
+// also require it to be funded.
+func EstimateFee(ctx context.Context, client *libyaci.Client, signer Signer, chainID string, msgs []Msg, opts TxOptions, gasPrices []Coin, gasAdjustment float64) (uint64, []Coin, error) {
+	gasUsed, err := EstimateGas(ctx, client, signer, chainID, msgs, opts)
+	if err != nil {
+		return 0, nil, err
+	}
+	gasLimit := applyGasAdjustment(gasUsed, gasAdjustment)
+	fee, err := FeeFromGasPrices(gasLimit, gasPrices)
+	if err != nil {
+		return 0, nil, err
+	}
+	return gasLimit, fee, nil
+}
+
+// applyGasAdjustment scales gasUsed by the adjustment, rounding up, with a
+// floor of the raw gas used.
+func applyGasAdjustment(gasUsed uint64, adjustment float64) uint64 {
+	if adjustment <= 0 {
+		adjustment = defaultGasAdjustment
+	}
+	limit := uint64(math.Ceil(float64(gasUsed) * adjustment))
+	if limit < gasUsed {
+		return gasUsed
+	}
+	return limit
+}
+
+// FeeFromGasPrices computes a fee as ceil(gasLimit * price) for each price,
+// using exact rational arithmetic (no floating point).
+func FeeFromGasPrices(gasLimit uint64, gasPrices []Coin) ([]Coin, error) {
+	if len(gasPrices) == 0 {
+		return nil, nil
+	}
+	fee := make([]Coin, 0, len(gasPrices))
+	for i, price := range gasPrices {
+		if price.Denom == "" || price.Amount == "" {
+			return nil, fmt.Errorf("gas price %d requires both denom and amount", i+1)
+		}
+		rate, ok := new(big.Rat).SetString(strings.TrimSpace(price.Amount))
+		if !ok || rate.Sign() < 0 {
+			return nil, fmt.Errorf("invalid gas price %q for %s", price.Amount, price.Denom)
+		}
+		total := new(big.Rat).Mul(rate, new(big.Rat).SetUint64(gasLimit))
+		fee = append(fee, Coin{Denom: price.Denom, Amount: ceilRat(total)})
+	}
+	return fee, nil
+}
+
+func ceilRat(value *big.Rat) string {
+	quotient := new(big.Int).Quo(value.Num(), value.Denom())
+	remainder := new(big.Int).Rem(value.Num(), value.Denom())
+	if remainder.Sign() > 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	return quotient.String()
 }
 
 // FetchAccountNumberSequence looks up an account's number and sequence, trying
