@@ -50,6 +50,20 @@ reflection.
   the private key, so `%v`/`%+v`/`%#v` logging cannot leak it. `WithPubKeyTypeURL`
   is rejected for `Secp256k1` signers (it only makes sense with `EthSecp256k1`).
 
+## Test identity
+
+`TestMnemonic` (`about` ×11 + `abuse`) and `NewTestSigner(algo)` are the
+canonical test/dry-run key. It controls no funds and must never hold real
+assets. Known values at `m/44'/118'/0'/0/0`:
+
+- public key `022fb148970ff67750208b4f12248b5338995877e6d774eaf393a728c54faa5b19`
+- Ethereum address `0x497c499b8d09d421c15d61bb99c33d0c859779bd`
+- secp256k1 addresses: `cosmos1wcf9yalcx4fdwm5hw8arswcvrfrds4xxxtaz44`,
+  `terra1wcf9yalcx4fdwm5hw8arswcvrfrds4xxq08zh4`
+- ethsecp256k1 address: `genesis1f97ynxudp82zrs2avxaenseapjzew7dag0wkqm`
+
+The integration probe's `estimate` mode uses it as the unrelated signing key.
+
 ## Dependencies
 
 The subpackage adds `github.com/btcsuite/btcd/btcec/v2` (secp256k1 + ECDSA),

@@ -281,7 +281,8 @@ Notes:
 - Signatures are deterministic (RFC 6979) 64-byte `r||s` over `SHA-256(signDoc)`, as required by `SIGN_MODE_DIRECT`.
 - Message payloads are protobuf-JSON objects with an `@type`; any type reachable by reflection or `WithProtoDir` can be signed.
 - **Security:** private keys and mnemonics are handled in-process. Never log secrets; prefer an external signer in production (implement the `Signer` interface — hardware, KMS, or remote signers plug in without changes).
-- Not yet implemented: `SIGN_MODE_AMINO_JSON`, legacy multisig, and fee estimation beyond `Simulate`.
+- **Test identity:** `signing.TestMnemonic` (`about ×11 + abuse`) and `signing.NewTestSigner(algo)` provide a canonical, publicly known key for tests, simulation, and fee estimation. It controls no funds and must never hold real assets. At `m/44'/118'/0'/0/0` it derives public key `022fb1…aa5b19`, Ethereum address `0x497c…79bd`, `cosmos1wcf9…taz44` (secp256k1), and `genesis1f97…wkqm` (ethsecp256k1).
+- Not yet implemented: `SIGN_MODE_AMINO_JSON`, legacy multisig, and automatic gas-price discovery.
 
 ### Live verification
 
