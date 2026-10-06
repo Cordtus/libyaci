@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -69,6 +70,7 @@ type endpointSpec struct {
 	algo          KeyAlgorithm
 	prefix        string
 	estimate      bool
+	lifecycle     bool
 }
 
 func parseEndpointSpec(raw string) endpointSpec {
@@ -85,6 +87,8 @@ func parseEndpointSpec(raw string) endpointSpec {
 			spec.algo = EthSecp256k1
 		case flag == "estimate":
 			spec.estimate = true
+		case flag == "lifecycle":
+			spec.lifecycle = true
 		case strings.HasPrefix(flag, "prefix="):
 			spec.prefix = strings.TrimPrefix(flag, "prefix=")
 		}
@@ -153,6 +157,9 @@ func probeEndpoint(t *testing.T, raw string) bool {
 
 	if spec.estimate {
 		return probeEstimate(t, ctx, client, spec, prefix, chainID)
+	}
+	if spec.lifecycle {
+		return probeLifecycle(t, ctx, client, spec, chainID)
 	}
 
 	// 2. Pick a public-key type URL the chain actually has.
@@ -295,6 +302,48 @@ func probeEstimate(t *testing.T, ctx context.Context, client *libyaci.Client, sp
 		return false
 	}
 	t.Logf("PASS estimate %s chainID=%s account=%s pubkeyType=%s gasLimit=%d fee=%v", spec.address, chainID, account, typeURL, gasLimit, fee)
+	return true
+}
+
+// probeLifecycle checks FetchMinGasPrice (best effort) and WaitForTx against a
+// recent transaction.
+func probeLifecycle(t *testing.T, ctx context.Context, client *libyaci.Client, spec endpointSpec, chainID string) bool {
+	if price, err := FetchMinGasPrice(ctx, client); err != nil {
+		t.Logf("min gas price unavailable: %v", err)
+	} else {
+		t.Logf("min gas price: %v", price)
+	}
+
+	latest, err := client.GetLatestBlockHeight()
+	if err != nil {
+		t.Logf("latest height: %v", err)
+		return false
+	}
+	var hash string
+	for height := latest; height > latest-100 && height > 0; height-- {
+		parsed, err := client.GetTxsByHeightParsed(height)
+		if err != nil || len(parsed.TxResponses) == 0 {
+			continue
+		}
+		var resp struct {
+			TxHash string `json:"txhash"`
+		}
+		if err := json.Unmarshal(parsed.TxResponses[0], &resp); err == nil && resp.TxHash != "" {
+			hash = resp.TxHash
+			break
+		}
+	}
+	if hash == "" {
+		t.Log("no recent transaction found")
+		return false
+	}
+
+	result, err := WaitForTx(ctx, client, hash, WaitOptions{PollInterval: time.Second, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Logf("WaitForTx(%s): %v", hash, err)
+		return false
+	}
+	t.Logf("PASS lifecycle %s chainID=%s tx=%s height=%d code=%d", spec.address, chainID, hash, result.Height, result.Code)
 	return true
 }
 
