@@ -2,6 +2,7 @@ package signing
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"strings"
@@ -19,6 +20,7 @@ import (
 //
 //	host:443
 //	host:9090|insecure
+//	host:443|tlsinsecure
 //	host:443|ethsecp
 //	host:443|prefix=osmo
 //
@@ -52,10 +54,11 @@ func TestIntegrationSigning(t *testing.T) {
 }
 
 type endpointSpec struct {
-	address  string
-	insecure bool
-	algo     KeyAlgorithm
-	prefix   string
+	address       string
+	insecure      bool
+	tlsSkipVerify bool
+	algo          KeyAlgorithm
+	prefix        string
 }
 
 func parseEndpointSpec(raw string) endpointSpec {
@@ -66,6 +69,8 @@ func parseEndpointSpec(raw string) endpointSpec {
 		switch {
 		case flag == "insecure":
 			spec.insecure = true
+		case flag == "tlsinsecure":
+			spec.tlsSkipVerify = true
 		case flag == "ethsecp":
 			spec.algo = EthSecp256k1
 		case strings.HasPrefix(flag, "prefix="):
@@ -88,6 +93,9 @@ func probeEndpoint(t *testing.T, raw string) bool {
 	}
 	if spec.insecure {
 		opts = append(opts, libyaci.WithInsecure())
+	}
+	if spec.tlsSkipVerify {
+		opts = append(opts, libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}))
 	}
 	client, err := libyaci.Dial(ctx, spec.address, opts...)
 	if err != nil {
