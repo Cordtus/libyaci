@@ -131,6 +131,42 @@ func TestMnemonicRejectsMalformedHDPath(t *testing.T) {
 	}
 }
 
+func TestTestSignerKnownIdentity(t *testing.T) {
+	signer, err := NewTestSigner(Secp256k1)
+	if err != nil {
+		t.Fatalf("NewTestSigner failed: %v", err)
+	}
+	// Known-answer values for the canonical TestMnemonic (m/44'/118'/0'/0/0).
+	const wantPub = "022fb148970ff67750208b4f12248b5338995877e6d774eaf393a728c54faa5b19"
+	const wantEth = "0x497c499b8d09d421c15d61bb99c33d0c859779bd"
+	if got := hex.EncodeToString(signer.PublicKey()); got != wantPub {
+		t.Fatalf("public key = %s, want %s", got, wantPub)
+	}
+	if got := signer.EthereumAddress(); got != wantEth {
+		t.Fatalf("eth address = %s, want %s", got, wantEth)
+	}
+	for prefix, want := range map[string]string{
+		"cosmos": "cosmos1wcf9yalcx4fdwm5hw8arswcvrfrds4xxxtaz44",
+		"terra":  "terra1wcf9yalcx4fdwm5hw8arswcvrfrds4xxq08zh4",
+	} {
+		address, err := signer.Address(prefix)
+		if err != nil || address != want {
+			t.Fatalf("%s address = %q, err = %v, want %q", prefix, address, err, want)
+		}
+	}
+
+	ethSigner, err := NewTestSigner(EthSecp256k1)
+	if err != nil {
+		t.Fatalf("NewTestSigner(ethsecp256k1) failed: %v", err)
+	}
+	if got := hex.EncodeToString(ethSigner.PublicKey()); got != wantPub {
+		t.Fatalf("ethsecp256k1 public key = %s, want %s (same key, different address)", got, wantPub)
+	}
+	if address, _ := ethSigner.Address("genesis"); address != "genesis1f97ynxudp82zrs2avxaenseapjzew7dag0wkqm" {
+		t.Fatalf("genesis ethsecp256k1 address = %q", address)
+	}
+}
+
 func TestEthereumAddressVector(t *testing.T) {
 	signer, err := NewPrivateKeySigner(privKeyOneHex, EthSecp256k1)
 	if err != nil {
