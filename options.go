@@ -1,6 +1,7 @@
 package libyaci
 
 import (
+	"crypto/tls"
 	"os"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type options struct {
 	dialTimeout            time.Duration
 	defaultTimeout         time.Duration // per-call timeout applied to every RPC
 	dialOpts               []grpc.DialOption
+	tlsConfig              *tls.Config // custom TLS config; ignored when insecure
 	fallback               *FallbackRegistry
 	useGlobalFallback      bool
 	protoDir               string // path to local proto files for fallback
@@ -81,6 +83,20 @@ func WithDefaultTimeout(timeout time.Duration) Option {
 func WithDialOptions(opts ...grpc.DialOption) Option {
 	return func(o *options) {
 		o.dialOpts = append(o.dialOpts, opts...)
+	}
+}
+
+// WithTLSConfig supplies a custom TLS configuration for the connection. Use it
+// for custom CA roots, client certificates, or to skip verification for
+// self-signed endpoints:
+//
+//	libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true})
+//
+// It is ignored when WithInsecure is set. Do not also pass
+// grpc.WithTransportCredentials via WithDialOptions.
+func WithTLSConfig(cfg *tls.Config) Option {
+	return func(o *options) {
+		o.tlsConfig = cfg
 	}
 }
 

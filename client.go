@@ -411,6 +411,8 @@ func dial(_ context.Context, address string, o *options) (*grpc.ClientConn, erro
 
 	if o.insecure {
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	} else if o.tlsConfig != nil {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(credentials.NewTLS(o.tlsConfig)))
 	} else {
 		creds := credentials.NewClientTLSFromCert(nil, "")
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
