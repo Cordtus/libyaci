@@ -3,13 +3,17 @@ package signing
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Cordtus/libyaci"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -23,6 +27,11 @@ import (
 //	host:443|tlsinsecure
 //	host:443|ethsecp
 //	host:443|prefix=osmo
+//	host:443|prefix=genesis|estimate
+//
+// The optional "estimate" flag performs a live fee estimation against an
+// existing account's public key (signed with an unrelated key, which simulation
+// accepts), proving the gas/fee path end to end.
 //
 // It is skipped unless the variable is set. The test verifies that reflection
 // exposes the tx scaffolding, that a transaction can be built and signed for
@@ -59,6 +68,7 @@ type endpointSpec struct {
 	tlsSkipVerify bool
 	algo          KeyAlgorithm
 	prefix        string
+	estimate      bool
 }
 
 func parseEndpointSpec(raw string) endpointSpec {
@@ -73,6 +83,8 @@ func parseEndpointSpec(raw string) endpointSpec {
 			spec.tlsSkipVerify = true
 		case flag == "ethsecp":
 			spec.algo = EthSecp256k1
+		case flag == "estimate":
+			spec.estimate = true
 		case strings.HasPrefix(flag, "prefix="):
 			spec.prefix = strings.TrimPrefix(flag, "prefix=")
 		}
@@ -137,6 +149,10 @@ func probeEndpoint(t *testing.T, raw string) bool {
 	if chainID == "" {
 		t.Log("could not determine chain ID")
 		return false
+	}
+
+	if spec.estimate {
+		return probeEstimate(t, ctx, client, spec, prefix, chainID)
 	}
 
 	// 2. Pick a public-key type URL the chain actually has.
@@ -224,4 +240,112 @@ func isDecodeOrSignatureError(err error) bool {
 		}
 	}
 	return false
+}
+
+// estimateSigner presents an existing account's public key in the signer info
+// but signs with an unrelated key. Simulation accepts this, which is how fee
+// estimation can be done without the account's private key.
+type estimateSigner struct {
+	pub   []byte
+	inner *PrivateKeySigner
+	url   string
+}
+
+func (s estimateSigner) PublicKey() []byte     { return s.pub }
+func (s estimateSigner) PubKeyTypeURL() string { return s.url }
+func (s estimateSigner) Sign(doc []byte) ([]byte, error) {
+	return s.inner.Sign(doc)
+}
+func (s estimateSigner) Address(prefix string) (string, error) {
+	return AddressFromPublicKey(s.pub, prefix, Secp256k1)
+}
+
+// probeEstimate discovers an existing account with an exposed public key and
+// estimates gas/fee for a self-send signed by an unrelated key.
+func probeEstimate(t *testing.T, ctx context.Context, client *libyaci.Client, spec endpointSpec, prefix, chainID string) bool {
+	account, pubKey, typeURL, number, sequence, err := discoverAccount(ctx, client, prefix)
+	if err != nil {
+		t.Logf("estimate: %v", err)
+		return false
+	}
+	inner, err := NewPrivateKeySigner(strings.Repeat("42", 32), spec.algo)
+	if err != nil {
+		t.Logf("estimate: inner signer: %v", err)
+		return false
+	}
+	signer := estimateSigner{pub: pubKey, inner: inner, url: typeURL}
+
+	denom := "stake"
+	if bond, err := client.GetBondDenom(); err == nil && bond != "" {
+		denom = bond
+	}
+	msg := Msg(fmt.Sprintf(
+		`{"@type":"/cosmos.bank.v1beta1.MsgSend","fromAddress":%q,"toAddress":%q,"amount":[{"denom":%q,"amount":"1"}]}`,
+		account, account, denom,
+	))
+	gasLimit, fee, err := EstimateFee(ctx, client, signer, chainID, []Msg{msg}, TxOptions{
+		Fee:           []Coin{{Denom: denom, Amount: "1"}},
+		GasLimit:      300000,
+		AccountNumber: number,
+		Sequence:      sequence,
+		AddressPrefix: prefix,
+	}, []Coin{{Denom: denom, Amount: "0.01"}}, 1.3)
+	if err != nil {
+		t.Logf("estimate failed: %v", err)
+		return false
+	}
+	t.Logf("PASS estimate %s chainID=%s account=%s pubkeyType=%s gasLimit=%d fee=%v", spec.address, chainID, account, typeURL, gasLimit, fee)
+	return true
+}
+
+func discoverAccount(ctx context.Context, client *libyaci.Client, prefix string) (address string, pubKey []byte, typeURL string, number, sequence uint64, err error) {
+	validators, err := client.GetAllValidators()
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("validators: %w", err)
+	}
+	if len(validators) == 0 {
+		return "", nil, "", 0, 0, errors.New("no validators")
+	}
+	var valoper string
+	for addr := range validators {
+		valoper = addr
+		break
+	}
+	_, payload, err := bech32.Decode(valoper)
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("decode valoper: %w", err)
+	}
+	raw, err := bech32.ConvertBits(payload, 5, 8, false)
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("convert valoper: %w", err)
+	}
+	converted, err := bech32.ConvertBits(raw, 8, 5, true)
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("convert account: %w", err)
+	}
+	address, err = bech32.Encode(prefix, converted)
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("encode account: %w", err)
+	}
+
+	info, err := client.GetAccountInfo(address)
+	if err != nil {
+		return "", nil, "", 0, 0, fmt.Errorf("account info for %s: %w", address, err)
+	}
+	number, _ = strconv.ParseUint(strings.TrimSpace(info.Info.AccountNumber), 10, 64)
+	sequence, _ = strconv.ParseUint(strings.TrimSpace(info.Info.Sequence), 10, 64)
+	pubAny, ok := info.Info.PubKey.(map[string]any)
+	if !ok {
+		return "", nil, "", 0, 0, fmt.Errorf("account %s has no exposed public key", address)
+	}
+	keyB64, _ := pubAny["key"].(string)
+	pubKey, err = base64.StdEncoding.DecodeString(keyB64)
+	if err != nil || len(pubKey) != 33 {
+		return "", nil, "", 0, 0, fmt.Errorf("unusable public key for %s", address)
+	}
+	typeURL, _ = pubAny["@type"].(string)
+	if typeURL == "" {
+		typeURL = secp256k1PubKeyTypeURL
+	}
+	return address, pubKey, typeURL, number, sequence, nil
 }
