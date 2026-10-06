@@ -45,6 +45,7 @@ Core components:
 - **Catalog** (`catalog.go`): immutable snapshot of advertised services, methods, and messages, plus `ChainInfo`. Only services returned by reflection's `ListServices` are callable; dependency-only services are excluded.
 - **Method/Request/Response** (`method.go`, `request.go`, `response.go`): descriptor-backed dynamic request/response builders. `Request.Set`/`SetPath`/`SetMap` accept Go values and resolve proto or JSON field names.
 - **Pagination** (`pagination.go`): `Method.EachPage` follows `pagination.key`/`next_key` for standard Cosmos queries and aborts if the server repeats a key.
+- **Streaming** (`stream.go`): server-, client-, and bidirectional-streaming RPCs via `Method.ServerStream`/`ClientStream`/`BidiStream` and `Client` equivalents.
 - **Fallback** (`fallback.go`, `protodir.go`): `FallbackRegistry` plus `ProtoDir`, which compiles local `.proto` files with `protocompile` on first miss. A configured `WithProtoDir` is attached to a clone so it never mutates the shared/global registry.
 - **Cosmos** (`cosmos.go`): convenience helpers over reflected Cosmos SDK query methods.
 - **Signing** (`signing/`): `Signer` interface plus an in-process secp256k1/ethsecp256k1 signer (raw key or BIP39 mnemonic). `BuildAndSign` assembles `SIGN_MODE_DIRECT` transactions using reflection-resolved tx scaffolding, then `Broadcast`/`Simulate` submit them. See [`dev-docs/architecture/signing.md`](dev-docs/architecture/signing.md).
@@ -54,7 +55,7 @@ Data flow: `Dial` → reflection snapshot → `buildFileDescriptorSetReport` →
 
 Method names use `package.Service.Method`, e.g. `cosmos.bank.v1beta1.Query.Balance`.
 
-Key patterns: dynamicpb for runtime messages; conditional retry (only `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`); per-call timeout via `WithDefaultTimeout`/`InvokeWithTimeout`; unary RPCs only (streaming methods return a clear error). Core dependencies are intentionally minimal: `google.golang.org/grpc`, `google.golang.org/protobuf`, `github.com/bufbuild/protocompile`; the optional `signing/` subpackage adds `btcec/v2`, `btcutil/bech32`, `cosmos/go-bip39`, and `golang.org/x/crypto`. No Cosmos SDK dependency in either case.
+Key patterns: dynamicpb for runtime messages; conditional retry (only `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Aborted`); per-call timeout via `WithDefaultTimeout`/`InvokeWithTimeout`; unary and streaming RPCs (server/client/bidi via `stream.go`). Core dependencies are intentionally minimal: `google.golang.org/grpc`, `google.golang.org/protobuf`, `github.com/bufbuild/protocompile`; the optional `signing/` subpackage adds `btcec/v2`, `btcutil/bech32`, `cosmos/go-bip39`, and `golang.org/x/crypto`. No Cosmos SDK dependency in either case.
 
 ## Local Proto Fallback
 

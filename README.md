@@ -273,6 +273,11 @@ _ = resp.TxHash
 | `FeeFromGasPrices(gasLimit, gasPrices)` | Exact `ceil(gasLimit × price)` fee (rational arithmetic) |
 | `Broadcast(ctx, client, txBytes, mode)` | `BROADCAST_MODE_SYNC`/`ASYNC`/`BLOCK`; errors on non-zero CheckTx code |
 | `Simulate(ctx, client, txBytes)` | Returns `gasInfo.gasUsed` |
+| `SignAndBroadcast(ctx, client, signer, chainID, prefix, msgs, opts, mode, retries)` | Fetch sequence, build/sign, broadcast; retries on sequence mismatch |
+| `BroadcastAndConfirm(ctx, client, txBytes, mode, opts)` | Broadcast, then wait for inclusion |
+| `WaitForTx(ctx, client, hash, opts)` | Poll `GetTx` until the tx is included or the timeout elapses |
+| `EstimateFeeForAccount(ctx, client, pubKey, pubKeyTypeURL, prefix, chainID, ...)` | Estimate gas/fee from an account's public key, no private key needed |
+| `FetchMinGasPrice(ctx, client)` | Best-effort node minimum gas price (parses a DecCoin list) |
 
 Notes:
 - **Fee estimation:** build the tx once with `BuildAndSign`, or use `EstimateFee` to simulate, apply a gas adjustment (default 1.3), and compute the fee from per-gas-unit prices. Gas prices are chain/operator policy and are not reliably exposed over gRPC, so pass them in (for example `{Denom:"uluna", Amount:"0.015"}`). Simulation accepts any *valid* signature — it does not need to match the account's key — but the public key in the signer info must derive to an existing account (the fee-payer lookup). A few chains additionally enforce funds during simulation.
@@ -286,7 +291,7 @@ Notes:
 
 ### Live verification
 
-The signing path is exercised against live testnets by `signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`). It was verified against secp256k1 chains (Cosmos Hub theta, Celestia mocha-5, Akash sandbox-2, Coreum, Axelar, Noble, Seda, Sei atlantic-2, Terra2 phoenix-1), ethsecp256k1 (Injective-888), and GenesisL1 (`genesis_29-2`, which uses `ethsecp256k1` account keys): transactions were built, signed, decoded by the node, and reached the ante handler (rejected only for missing funds/accounts, which is expected for unfunded test keys). `EstimateFee` was verified live on GenesisL1 and Terra2 using an existing account's public key signed by an unrelated key. Self-signed TLS endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true})`.
+The signing path is exercised against live testnets by `signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`). It was verified against secp256k1 chains (Cosmos Hub theta, Celestia mocha-5, Akash sandbox-2, Coreum, Axelar, Noble, Seda, Sei atlantic-2, Terra2 phoenix-1), ethsecp256k1 (Injective-888), and GenesisL1 (`genesis_29-2`, which uses `ethsecp256k1` account keys): transactions were built, signed, decoded by the node, and reached the ante handler (rejected only for missing funds/accounts, which is expected for unfunded test keys). `EstimateFee` was verified live on GenesisL1 and Terra2 using an existing account's public key signed by an unrelated key. `FetchMinGasPrice` and `WaitForTx` were verified live on Terra2 (`phoenix-1`). Streaming is unit-tested against a dynamic gRPC mock. Self-signed TLS endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true})`.
 
 ## Core Methods
 
@@ -334,7 +339,18 @@ Legacy JSON helpers remain available:
 | `Conn() *grpc.ClientConn` | Get underlying gRPC connection |
 | `Close() error` | Close client connection |
 
-> **Unary only.** Streaming RPCs are advertised by the catalog but cannot be invoked yet; calling one returns a clear error. Protobuf extensions are resolved from reflected and fallback descriptors via `Resolver.FindExtensionByName` / `FindExtensionByNumber`.
+### Streaming RPCs
+
+Server-, client-, and bidirectional-streaming methods are supported. All return descriptor-backed `*dynamicpb.Message` values; always `Close()` a stream when done.
+
+| Method | Description |
+|--------|-------------|
+| `ServerStream(ctx, method, request) (*ServerStream, error)` | Open a server stream; call `Recv()` until `io.EOF` |
+| `ClientStream(ctx, method) (*ClientStream, error)` | Open a client stream; `Send()` then `CloseAndRecv()` |
+| `BidiStream(ctx, method) (*BidiStream, error)` | Open a bidirectional stream; `Send()` / `Recv()` |
+| `Method.ServerStream/ClientStream/BidiStream` | Descriptor-backed variants taking a `*Request` |
+
+> Protobuf extensions are resolved from reflected and fallback descriptors via `Resolver.FindExtensionByName` / `FindExtensionByNumber`.
 >
 > **`raw_log` encoding.** The descriptor patch for cosmos-sdk#22414 changes `cosmos.base.abci.v1beta1.TxResponse.raw_log` from string to bytes, so that field appears base64-encoded in JSON output. Other string fields that contain binary data are patched on demand (UTF-8 recovery) for both reflected and local-proto types.
 >

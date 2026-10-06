@@ -16,6 +16,7 @@ optional local proto directory.
 | Capability catalog | `catalog.go` | Advertised services/methods/messages and chain metadata |
 | Dynamic messages | `method.go`, `request.go`, `response.go` | Descriptor-backed request/response builders |
 | Pagination | `pagination.go` | `Method.EachPage` over Cosmos `pagination.key`/`next_key` |
+| Streaming | `stream.go` | Server-, client-, and bidirectional-streaming invocation |
 | Fallback | `fallback.go`, `protodir.go` | Pre-registered descriptors and lazy local `.proto` compilation |
 | Cosmos helpers | `cosmos.go` | Convenience wrappers over reflected Cosmos query methods |
 | Signing | `signing/` | `SIGN_MODE_DIRECT` transaction building, signing, broadcasting |
@@ -81,8 +82,8 @@ version cache is a package-level map guarded by a mutex and cleared on
 - Reflection v1 and v1alpha are both supported.
 - TLS verifies against system roots by default; `WithTLSConfig` supplies a custom CA, client certificate, or `InsecureSkipVerify` for self-signed nodes.
 - Some nodes fail ALPN negotiation; see the `alpnfix` package and the README.
-- Only unary RPCs are invocable. Streaming methods are advertised by the catalog
-  but calling one returns a clear error.
+- Streaming RPCs are supported: server-, client-, and bidirectional-streaming via
+  `stream.go` (`ServerStream`/`ClientStream`/`BidiStream`).
 - `applyDescriptorPatches` rewrites `cosmos.base.abci.v1beta1.TxResponse.raw_log`
   from string to bytes (cosmos-sdk#22414), so JSON output for that field is
   base64. Dynamic UTF-8 recovery patches other string fields on demand, for both

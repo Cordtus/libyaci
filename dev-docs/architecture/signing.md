@@ -72,6 +72,19 @@ The subpackage adds `github.com/btcsuite/btcd/btcec/v2` (secp256k1 + ECDSA),
 (RIPEMD-160, Keccak-256). The root package does not import `signing`, so
 read-only users do not compile these.
 
+## Transaction lifecycle
+
+- `SignAndBroadcast` fetches the account number/sequence when they are unset,
+  builds and signs, broadcasts, and on a sequence mismatch refreshes the
+  sequence and retries.
+- `BroadcastAndConfirm` broadcasts and then `WaitForTx` polls `GetTx` until the
+  transaction is included or the timeout elapses.
+- `EstimateFeeForAccount` estimates gas/fee from an account's public key, with
+  no private key, using the mismatched-signature simulation behavior.
+- `FetchMinGasPrice` queries `cosmos.base.node.v1beta1.Service.Config` on a
+  best-effort basis; many nodes do not expose it, so callers should fall back to
+  a configured price. GenesisL1, for example, reports `el1`.
+
 ## Boundaries and security
 
 - Private keys and mnemonics are handled in process. Callers must not log them.
@@ -106,7 +119,11 @@ signs, and simulates a self-send against live testnets. Verified against:
 existing account's public key and signing the sign-doc with an unrelated key —
 confirming that simulation does not require the matching private key. GenesisL1
 accounts use `/ethermint.crypto.v1.ethsecp256k1.PubKey`, so callers must use
-`EthSecp256k1` (or the account's reflected key type) for it.
+`EthSecp256k1` (or the account's reflected key type) for it. `FetchMinGasPrice`
+worked on both (Terra2 `uluna`, GenesisL1 `el1`) and `WaitForTx` confirmed a real
+Terra2 transaction; GenesisL1 does not index `tx.height`, so no recent tx was
+found there. Streaming is unit-tested against a dynamic gRPC mock (no live
+Cosmos gRPC service streams).
 
 "Reached the fee check" means the ante handler verified the signature and then
 failed on funds, which is the expected outcome for an unfunded test key. All
@@ -116,5 +133,5 @@ endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVeri
 
 ## Not implemented
 
-`SIGN_MODE_AMINO_JSON`, legacy amino multisig, automatic gas-price discovery,
-and automatic sequence retry on `ErrWrongSequence`.
+`SIGN_MODE_AMINO_JSON`, legacy amino multisig, and automatic gas-price
+discovery (`FetchMinGasPrice` is best-effort only).
