@@ -33,6 +33,12 @@ reflection.
   discovers it when `cosmos.auth.v1beta1.Query.Bech32Prefix` is advertised;
   otherwise the caller supplies it. A wrong prefix fails the node's address
   decoding, not our construction.
+- **Fee estimation.** `EstimateGas` builds and signs a transaction with a
+  provisional gas limit and returns the simulated gas used. `EstimateFee`
+  applies a gas adjustment (default 1.3) and computes `ceil(gasLimit × price)`
+  with exact rational arithmetic. Gas prices are caller-supplied because nodes
+  do not reliably expose minimum gas prices over gRPC. Simulation requires the
+  signer's account to exist, and some chains also require it to be funded.
 - **Key sources.** Raw 32-byte key (64-char hex or base64) and BIP39 mnemonic
   with BIP44 derivation (default `m/44'/118'/0'/0/0`). BIP32 child derivation is
   implemented in-package (HMAC-SHA512), so no external BIP32 dependency is
@@ -77,6 +83,8 @@ signs, and simulates a self-send against live testnets. Verified against:
 | Seda | seda-1-testnet | secp256k1 | decoded; fee-payer account absent |
 | Sei | atlantic-2 | secp256k1 | decoded; reached fee check (insufficient funds) |
 | Injective | injective-888 | ethsecp256k1 | decoded; reached fee check (insufficient funds) |
+| **GenesisL1** | genesis_29-2 | secp256k1 | decoded; fee-payer account absent (3/3 nodes) |
+| **Terra2** | phoenix-1 | secp256k1 | decoded; fee-payer account absent (2/5 nodes) |
 
 "Reached the fee check" means the ante handler verified the signature and then
 failed on funds, which is the expected outcome for an unfunded test key. All
@@ -86,5 +94,5 @@ endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVeri
 
 ## Not implemented
 
-`SIGN_MODE_AMINO_JSON`, legacy amino multisig, fee estimation heuristics, and
-automatic sequence retry on `ErrWrongSequence`.
+`SIGN_MODE_AMINO_JSON`, legacy amino multisig, automatic gas-price discovery,
+and automatic sequence retry on `ErrWrongSequence`.

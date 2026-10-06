@@ -236,8 +236,20 @@ tx, err := signing.BuildAndSign(client.Resolver(), signer, "cosmoshub-4", msgs, 
 })
 if err != nil { /* ... */ }
 
-// Optional: estimate gas before broadcasting.
-gas, err := signing.Simulate(ctx, client, tx.TxBytes)
+// Optional: estimate the gas limit and fee, then rebuild with them.
+gasLimit, fee, err := signing.EstimateFee(ctx, client, signer, "cosmoshub-4", msgs, signing.TxOptions{
+    AccountNumber: accountNumber,
+    Sequence:      sequence,
+}, []signing.Coin{{Denom: "uatom", Amount: "0.025"}}, 1.3)
+if err != nil { /* ... */ }
+tx, err = signing.BuildAndSign(client.Resolver(), signer, "cosmoshub-4", msgs, signing.TxOptions{
+    Fee:           fee,
+    GasLimit:      gasLimit,
+    AccountNumber: accountNumber,
+    Sequence:      sequence,
+    AddressPrefix: "cosmos",
+})
+if err != nil { /* ... */ }
 
 resp, err := signing.Broadcast(ctx, client, tx.TxBytes, signing.BroadcastModeSync)
 if err != nil { /* CheckTx rejected or transport error */ }
@@ -256,10 +268,14 @@ _ = resp.TxHash
 | `BuildAndSign(resolver, signer, chainID, msgs, opts)` | Returns body/auth/sign-doc/tx bytes, signature, tx hash |
 | `ResolvePubKeyTypeURL(resolver, algo)` | Picks the reflected public-key type URL for an algorithm |
 | `FetchAccountNumberSequence(ctx, client, address)` | Account number and sequence (AccountInfo, then Account) |
+| `EstimateGas(ctx, client, signer, chainID, msgs, opts)` | Simulates the tx and returns raw gas used |
+| `EstimateFee(ctx, client, signer, chainID, msgs, opts, gasPrices, adjustment)` | Returns the adjusted gas limit and computed fee |
+| `FeeFromGasPrices(gasLimit, gasPrices)` | Exact `ceil(gasLimit × price)` fee (rational arithmetic) |
 | `Broadcast(ctx, client, txBytes, mode)` | `BROADCAST_MODE_SYNC`/`ASYNC`/`BLOCK`; errors on non-zero CheckTx code |
 | `Simulate(ctx, client, txBytes)` | Returns `gasInfo.gasUsed` |
 
 Notes:
+- **Fee estimation:** build the tx once with `BuildAndSign`, or use `EstimateFee` to simulate, apply a gas adjustment (default 1.3), and compute the fee from per-gas-unit prices. Gas prices are chain/operator policy and are not reliably exposed over gRPC, so pass them in (for example `{Denom:"uluna", Amount:"0.015"}`). Simulation requires the signer's account to exist on chain and, on some chains, to be funded.
 - `KeyAlgorithm` is `signing.Secp256k1` (standard Cosmos) or `signing.EthSecp256k1` (Ethermint/Injective/Sei). ethsecp256k1 chains use different public-key type URLs, so call `signing.ResolvePubKeyTypeURL(client.Resolver(), algo)` and pass the result to `signing.WithPubKeyTypeURL`.
 - The bech32 prefix must match the chain's configured prefix (`cosmos`, `osmo`, `testcore`, `sei`, `inj`, …). `client.GetBech32Prefix()` discovers it when the chain advertises `cosmos.auth.v1beta1.Query.Bech32Prefix`; otherwise supply it.
 - Signatures are deterministic (RFC 6979) 64-byte `r||s` over `SHA-256(signDoc)`, as required by `SIGN_MODE_DIRECT`.
