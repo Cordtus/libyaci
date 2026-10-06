@@ -37,8 +37,10 @@ reflection.
   provisional gas limit and returns the simulated gas used. `EstimateFee`
   applies a gas adjustment (default 1.3) and computes `ceil(gasLimit × price)`
   with exact rational arithmetic. Gas prices are caller-supplied because nodes
-  do not reliably expose minimum gas prices over gRPC. Simulation requires the
-  signer's account to exist, and some chains also require it to be funded.
+  do not reliably expose minimum gas prices over gRPC. Simulation accepts any
+  valid signature, so fee estimation does not require the account's private key;
+  it does require the signer-info public key to derive to an existing account
+  (fee-payer lookup), and a few chains also enforce funds during simulation.
 - **Key sources.** Raw 32-byte key (64-char hex or base64) and BIP39 mnemonic
   with BIP44 derivation (default `m/44'/118'/0'/0/0`). BIP32 child derivation is
   implemented in-package (HMAC-SHA512), so no external BIP32 dependency is
@@ -83,8 +85,14 @@ signs, and simulates a self-send against live testnets. Verified against:
 | Seda | seda-1-testnet | secp256k1 | decoded; fee-payer account absent |
 | Sei | atlantic-2 | secp256k1 | decoded; reached fee check (insufficient funds) |
 | Injective | injective-888 | ethsecp256k1 | decoded; reached fee check (insufficient funds) |
-| **GenesisL1** | genesis_29-2 | secp256k1 | decoded; fee-payer account absent (3/3 nodes) |
-| **Terra2** | phoenix-1 | secp256k1 | decoded; fee-payer account absent (2/5 nodes) |
+| **GenesisL1** | genesis_29-2 | ethsecp256k1 | signing decoded (3/3 nodes); `EstimateFee` live (1102 `el1`) |
+| **Terra2** | phoenix-1 | secp256k1 | signing decoded (2/5 nodes); `EstimateFee` live (964 `uluna`) |
+
+`EstimateFee` was exercised live on GenesisL1 and Terra2 by presenting an
+existing account's public key and signing the sign-doc with an unrelated key —
+confirming that simulation does not require the matching private key. GenesisL1
+accounts use `/ethermint.crypto.v1.ethsecp256k1.PubKey`, so callers must use
+`EthSecp256k1` (or the account's reflected key type) for it.
 
 "Reached the fee check" means the ante handler verified the signature and then
 failed on funds, which is the expected outcome for an unfunded test key. All

@@ -275,7 +275,7 @@ _ = resp.TxHash
 | `Simulate(ctx, client, txBytes)` | Returns `gasInfo.gasUsed` |
 
 Notes:
-- **Fee estimation:** build the tx once with `BuildAndSign`, or use `EstimateFee` to simulate, apply a gas adjustment (default 1.3), and compute the fee from per-gas-unit prices. Gas prices are chain/operator policy and are not reliably exposed over gRPC, so pass them in (for example `{Denom:"uluna", Amount:"0.015"}`). Simulation requires the signer's account to exist on chain and, on some chains, to be funded.
+- **Fee estimation:** build the tx once with `BuildAndSign`, or use `EstimateFee` to simulate, apply a gas adjustment (default 1.3), and compute the fee from per-gas-unit prices. Gas prices are chain/operator policy and are not reliably exposed over gRPC, so pass them in (for example `{Denom:"uluna", Amount:"0.015"}`). Simulation accepts any *valid* signature — it does not need to match the account's key — but the public key in the signer info must derive to an existing account (the fee-payer lookup). A few chains additionally enforce funds during simulation.
 - `KeyAlgorithm` is `signing.Secp256k1` (standard Cosmos) or `signing.EthSecp256k1` (Ethermint/Injective/Sei). ethsecp256k1 chains use different public-key type URLs, so call `signing.ResolvePubKeyTypeURL(client.Resolver(), algo)` and pass the result to `signing.WithPubKeyTypeURL`.
 - The bech32 prefix must match the chain's configured prefix (`cosmos`, `osmo`, `testcore`, `sei`, `inj`, …). `client.GetBech32Prefix()` discovers it when the chain advertises `cosmos.auth.v1beta1.Query.Bech32Prefix`; otherwise supply it.
 - Signatures are deterministic (RFC 6979) 64-byte `r||s` over `SHA-256(signDoc)`, as required by `SIGN_MODE_DIRECT`.
@@ -285,7 +285,7 @@ Notes:
 
 ### Live verification
 
-The signing path is exercised against live testnets by `signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`). It was verified against secp256k1 chains (Cosmos Hub theta, Celestia mocha-5, Akash sandbox-2, Coreum, Axelar, Noble, Seda, Sei atlantic-2) and ethsecp256k1 (Injective-888): transactions were built, signed, decoded by the node, and reached the ante handler (rejected only for missing funds/accounts, which is expected for unfunded test keys). Self-signed TLS endpoints need a custom transport; libyaci does not yet expose a `WithTLSConfig` option.
+The signing path is exercised against live testnets by `signing/integration_test.go` (gated by `LIBYACI_SIGNING_ENDPOINTS`). It was verified against secp256k1 chains (Cosmos Hub theta, Celestia mocha-5, Akash sandbox-2, Coreum, Axelar, Noble, Seda, Sei atlantic-2, Terra2 phoenix-1), ethsecp256k1 (Injective-888), and GenesisL1 (`genesis_29-2`, which uses `ethsecp256k1` account keys): transactions were built, signed, decoded by the node, and reached the ante handler (rejected only for missing funds/accounts, which is expected for unfunded test keys). `EstimateFee` was verified live on GenesisL1 and Terra2 using an existing account's public key signed by an unrelated key. Self-signed TLS endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true})`.
 
 ## Core Methods
 
