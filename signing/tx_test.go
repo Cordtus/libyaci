@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
@@ -255,6 +256,60 @@ func TestApplyGasAdjustment(t *testing.T) {
 	}
 	if got := applyGasAdjustment(0, 1.3); got != 0 {
 		t.Fatalf("zero gas = %d, want 0", got)
+	}
+}
+
+func TestParseDecCoins(t *testing.T) {
+	coins, err := parseDecCoins("0.025uatom,0.001stake")
+	if err != nil || len(coins) != 2 {
+		t.Fatalf("coins = %+v, err = %v", coins, err)
+	}
+	if coins[0].Denom != "uatom" || coins[0].Amount != "0.025" {
+		t.Fatalf("first coin = %+v", coins[0])
+	}
+	if coins[1].Denom != "stake" || coins[1].Amount != "0.001" {
+		t.Fatalf("second coin = %+v", coins[1])
+	}
+	if _, err := parseDecCoins("uatom"); err == nil {
+		t.Fatal("missing amount should error")
+	}
+	if _, err := parseDecCoins("0.1"); err == nil {
+		t.Fatal("missing denom should error")
+	}
+}
+
+func TestParseTxResult(t *testing.T) {
+	result, err := parseTxResult([]byte(`{"height":"123","txhash":"ABC","code":0,"raw_log":"ok"}`))
+	if err != nil {
+		t.Fatalf("parseTxResult failed: %v", err)
+	}
+	if result.Height != 123 || result.TxHash != "ABC" || result.Code != 0 {
+		t.Fatalf("unexpected result %+v", result)
+	}
+	// Nested form and base64 raw_log (descriptor patch makes raw_log bytes).
+	result, err = parseTxResult([]byte(`{"txResponse":{"height":"5","txhash":"DEF","code":7,"raw_log":"Ym9vbQ=="}}`))
+	if err != nil {
+		t.Fatalf("parseTxResult (nested) failed: %v", err)
+	}
+	if result.Height != 5 || result.TxHash != "DEF" || result.Code != 7 || result.RawLog != "boom" {
+		t.Fatalf("unexpected nested result %+v", result)
+	}
+}
+
+func TestIsSequenceError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("account sequence mismatch, expected 5, got 4"), true},
+		{errors.New("incorrect account sequence"), true},
+		{errors.New("insufficient funds"), false},
+	}
+	for _, tt := range cases {
+		if got := isSequenceError(tt.err); got != tt.want {
+			t.Fatalf("isSequenceError(%v) = %v, want %v", tt.err, got, tt.want)
+		}
 	}
 }
 

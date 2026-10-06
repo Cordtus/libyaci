@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Cordtus/libyaci"
@@ -584,4 +585,255 @@ func toUint(raw any) (uint64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// WaitOptions controls transaction confirmation polling.
+type WaitOptions struct {
+	PollInterval time.Duration // default 2s
+	Timeout      time.Duration // default 60s
+}
+
+// TxResult summarizes an included transaction.
+type TxResult struct {
+	Height int64
+	TxHash string
+	Code   uint32
+	RawLog string
+	Raw    json.RawMessage
+}
+
+// WaitForTx polls GetTx until the transaction is found (included) or the
+// timeout elapses.
+func WaitForTx(ctx context.Context, client *libyaci.Client, hash string, opts WaitOptions) (*TxResult, error) {
+	if client == nil {
+		return nil, errors.New("client is required")
+	}
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, errors.New("tx hash is required")
+	}
+	interval := opts.PollInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+
+	var lastErr error
+	for {
+		tx, err := client.GetTx(hash)
+		if err == nil {
+			result, perr := parseTxResult(tx.TxResponse)
+			if perr == nil {
+				return result, nil
+			}
+			lastErr = perr
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			if lastErr == nil {
+				lastErr = errors.New("timeout")
+			}
+			return nil, fmt.Errorf("tx %s not confirmed within %s: %w", hash, timeout, lastErr)
+		}
+		if err := sleepCtx(ctx, interval); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// BroadcastAndConfirm broadcasts with the given mode and, when accepted, waits
+// for the transaction to be included.
+func BroadcastAndConfirm(ctx context.Context, client *libyaci.Client, txBytes []byte, mode BroadcastMode, opts WaitOptions) (*BroadcastResponse, *TxResult, error) {
+	resp, err := Broadcast(ctx, client, txBytes, mode)
+	if err != nil {
+		return resp, nil, err
+	}
+	result, err := WaitForTx(ctx, client, resp.TxHash, opts)
+	return resp, result, err
+}
+
+// SignAndBroadcast fetches the account number/sequence when they are unset,
+// builds and signs the transaction, and broadcasts it. If the node rejects it
+// for a sequence mismatch, it refreshes the sequence and retries up to `retries`
+// times.
+func SignAndBroadcast(ctx context.Context, client *libyaci.Client, signer Signer, chainID, addressPrefix string, msgs []Msg, opts TxOptions, mode BroadcastMode, retries uint) (*SignedTx, *BroadcastResponse, error) {
+	if client == nil {
+		return nil, nil, errors.New("client is required")
+	}
+	if signer == nil {
+		return nil, nil, errors.New("signer is required")
+	}
+	address, err := signer.Address(addressPrefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	if opts.AccountNumber == 0 && opts.Sequence == 0 {
+		number, sequence, err := FetchAccountNumberSequence(ctx, client, address)
+		if err != nil {
+			return nil, nil, err
+		}
+		opts.AccountNumber, opts.Sequence = number, sequence
+	}
+
+	var tx *SignedTx
+	var resp *BroadcastResponse
+	for attempt := uint(0); ; attempt++ {
+		tx, err = BuildAndSign(client.Resolver(), signer, chainID, msgs, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err = Broadcast(ctx, client, tx.TxBytes, mode)
+		if err == nil {
+			return tx, resp, nil
+		}
+		if attempt >= retries || !isSequenceError(err) {
+			return tx, resp, err
+		}
+		_, sequence, fetchErr := FetchAccountNumberSequence(ctx, client, address)
+		if fetchErr != nil {
+			return tx, resp, err
+		}
+		opts.Sequence = sequence
+	}
+}
+
+func isSequenceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"account sequence mismatch", "incorrect account sequence",
+		"wrong sequence", "sequence mismatch", "invalid sequence",
+	} {
+		if strings.Contains(message, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func parseTxResult(raw json.RawMessage) (*TxResult, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("parse tx response: %w", err)
+	}
+	fields := obj
+	if nested, ok := obj["txResponse"].(map[string]any); ok {
+		fields = nested
+	}
+	return &TxResult{
+		Height: int64(uintField(fields, "height")),
+		TxHash: stringField(fields, "txhash", "txHash", "hash"),
+		Code:   uint32(uintField(fields, "code")),
+		RawLog: humanReadableLog(stringField(fields, "rawLog", "raw_log", "log")),
+		Raw:    raw,
+	}, nil
+}
+
+// EstimateFeeForAccount estimates gas and fee for an account without its
+// private key. Simulation accepts any valid signature, so this presents the
+// account's public key in the signer info and signs with a dummy key. The
+// account must exist on chain.
+//
+// pubKeyTypeURL is the account's public-key Any type URL, for example
+// "/cosmos.crypto.secp256k1.PubKey" or
+// "/ethermint.crypto.v1.ethsecp256k1.PubKey" (from the Account query).
+func EstimateFeeForAccount(ctx context.Context, client *libyaci.Client, publicKey []byte, pubKeyTypeURL, addressPrefix, chainID string, msgs []Msg, opts TxOptions, gasPrices []Coin, gasAdjustment float64) (uint64, []Coin, error) {
+	if len(publicKey) == 0 {
+		return 0, nil, errors.New("public key is required")
+	}
+	if pubKeyTypeURL == "" {
+		return 0, nil, errors.New("pubKeyTypeURL is required")
+	}
+	inner, err := NewTestSigner(Secp256k1)
+	if err != nil {
+		return 0, nil, err
+	}
+	signer := dummySigner{pub: publicKey, inner: inner, url: pubKeyTypeURL}
+	return EstimateFee(ctx, client, signer, chainID, msgs, opts, gasPrices, gasAdjustment)
+}
+
+// dummySigner presents a caller-supplied public key in the signer info and
+// signs with an unrelated key. Only valid for simulation, where the signature
+// is not checked against the account.
+type dummySigner struct {
+	pub   []byte
+	inner *PrivateKeySigner
+	url   string
+}
+
+func (d dummySigner) PublicKey() []byte     { return d.pub }
+func (d dummySigner) PubKeyTypeURL() string { return d.url }
+func (d dummySigner) Sign(doc []byte) ([]byte, error) {
+	return d.inner.Sign(doc)
+}
+func (d dummySigner) Address(prefix string) (string, error) {
+	return AddressFromPublicKey(d.pub, prefix, algoFromTypeURL(d.url))
+}
+
+func algoFromTypeURL(url string) KeyAlgorithm {
+	if strings.Contains(strings.ToLower(url), "ethsecp256k1") {
+		return EthSecp256k1
+	}
+	return Secp256k1
+}
+
+// FetchMinGasPrice queries cosmos.base.node.v1beta1.Service.Config for the
+// node's minimum gas price. Many nodes do not expose it, so callers should fall
+// back to a configured price when this errors.
+func FetchMinGasPrice(ctx context.Context, client *libyaci.Client) ([]Coin, error) {
+	if client == nil {
+		return nil, errors.New("client is required")
+	}
+	resp, err := client.Invoke("cosmos.base.node.v1beta1.Service.Config", []byte("{}"))
+	if err != nil {
+		return nil, err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(resp, &obj); err != nil {
+		return nil, fmt.Errorf("parse node config: %w", err)
+	}
+	raw := stringField(obj, "minimumGasPrice", "minimum_gas_price")
+	if raw == "" {
+		return nil, errors.New("node does not expose a minimum gas price")
+	}
+	return parseDecCoins(raw)
+}
+
+// parseDecCoins parses a comma-separated DecCoin list such as
+// "0.025uatom,0.001stake" into price coins.
+func parseDecCoins(raw string) ([]Coin, error) {
+	var coins []Coin
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := 0
+		for idx < len(part) && ((part[idx] >= '0' && part[idx] <= '9') || part[idx] == '.') {
+			idx++
+		}
+		if idx == 0 || idx == len(part) {
+			return nil, fmt.Errorf("invalid gas price %q", part)
+		}
+		coins = append(coins, Coin{Denom: part[idx:], Amount: part[:idx]})
+	}
+	return coins, nil
 }
