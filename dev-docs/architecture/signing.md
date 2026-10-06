@@ -81,8 +81,8 @@ signs, and simulates a self-send against live testnets. Verified against:
 "Reached the fee check" means the ante handler verified the signature and then
 failed on funds, which is the expected outcome for an unfunded test key. All
 outcomes are ante errors, never decode/signature errors. Self-signed TLS
-endpoints (for example `celestia-testnet-grpc.itrocket.net:443`) cannot be used
-until a `WithTLSConfig` option exists.
+endpoints are reachable with `libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true})`
+(the probe's `tlsinsecure` flag); verified against `celestia-testnet-grpc.itrocket.net:443`.
 
 ## Not implemented
 

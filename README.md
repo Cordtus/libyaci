@@ -92,11 +92,14 @@ client, err := libyaci.Dial(ctx, "grpc.example.com:443",
     libyaci.WithDefaultTimeout(10 * time.Second),   // Timeout per invocation (includes retries)
     libyaci.WithSDKVersion("0.47.0"),               // Diagnostic metadata only
     libyaci.WithDialOptions(grpc.WithPerRPCCredentials(creds)), // Custom gRPC options
+    libyaci.WithTLSConfig(&tls.Config{InsecureSkipVerify: true}), // Custom CA / self-signed certs
     libyaci.WithProtoDir("./protos"),               // Secondary fallback for deprecated types
 )
 ```
 
 Reflection decides what can be called. SDK version options annotate diagnostics and unsupported-method errors, but a method is supported only when its service is advertised by reflection and the method exists in that reflected service descriptor.
+
+By default the client verifies the server certificate against the system roots. Use `WithTLSConfig` for a custom CA, client certificate, or self-signed endpoint (for example `WithTLSConfig(&tls.Config{InsecureSkipVerify: true})`). `WithTLSConfig` is ignored when `WithInsecure` is set, and should not be combined with a `grpc.WithTransportCredentials` passed via `WithDialOptions`.
 
 ## ALPN Enforcement (grpc-go v1.67+)
 

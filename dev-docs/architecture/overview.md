@@ -79,6 +79,7 @@ version cache is a package-level map guarded by a mutex and cleared on
 
 - Go 1.24+, `grpc-go` v1.77, `protobuf` v1.36.
 - Reflection v1 and v1alpha are both supported.
+- TLS verifies against system roots by default; `WithTLSConfig` supplies a custom CA, client certificate, or `InsecureSkipVerify` for self-signed nodes.
 - Some nodes fail ALPN negotiation; see the `alpnfix` package and the README.
 - Only unary RPCs are invocable. Streaming methods are advertised by the catalog
   but calling one returns a clear error.
