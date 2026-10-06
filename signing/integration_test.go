@@ -268,7 +268,7 @@ func probeEstimate(t *testing.T, ctx context.Context, client *libyaci.Client, sp
 		t.Logf("estimate: %v", err)
 		return false
 	}
-	inner, err := NewPrivateKeySigner(strings.Repeat("42", 32), spec.algo)
+	inner, err := NewTestSigner(Secp256k1)
 	if err != nil {
 		t.Logf("estimate: inner signer: %v", err)
 		return false
